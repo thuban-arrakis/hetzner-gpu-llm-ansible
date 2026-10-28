@@ -1,0 +1,49 @@
+---
+- name: Enable Docker startup
+  ansible.builtin.systemd_service:
+    name: docker
+    enabled: true
+    state: started
+  when: not ansible_check_mode
+
+- name: Apply Docker configuration before deploying containers
+  ansible.builtin.meta: flush_handlers
+
+- name: Read the running Docker Engine version
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - version
+      - --format
+      - "{{ '{{.Server.Version}}' }}"
+  register: docker_engine_running_version
+  changed_when: false
+  when: not ansible_check_mode
+
+- name: Require Docker's corrected localhost publishing behavior
+  ansible.builtin.assert:
+    that:
+      - docker_engine_running_version.stdout | trim is version('28.0.0', '>=')
+    fail_msg: >-
+      Docker Engine 28.0.0 or newer is required. Earlier versions can expose
+      localhost-published ports to other hosts on the same layer-2 network.
+      Upgrade Docker during a maintenance window before deploying the API.
+  when: not ansible_check_mode
+
+- name: Read the Docker Compose plugin version
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - compose
+      - version
+      - --short
+  register: docker_engine_compose_version
+  changed_when: false
+  when: not ansible_check_mode
+
+- name: Require the Compose startup-healthcheck interface
+  ansible.builtin.assert:
+    that:
+      - docker_engine_compose_version.stdout | trim | regex_replace('^v', '') is version('2.20.0', '>=')
+    fail_msg: Docker Compose 2.20.0 or newer is required for the managed service.
+  when: not ansible_check_mode

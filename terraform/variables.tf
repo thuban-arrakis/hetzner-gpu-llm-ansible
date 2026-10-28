@@ -36,3 +36,9 @@ variable "ansible_user" {
     error_message = "ansible_user must be a valid lowercase Linux account name."
   }
 }
+
+variable "public_api_enabled" {
+  description = "Open TCP 80/443 for an authenticated HTTPS gateway and IP certificate validation. The raw Ollama port remains private. Requires one admin IPv4 CIDR."
+  type        = bool
+  default     = false
+}

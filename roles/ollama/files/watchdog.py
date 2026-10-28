@@ -51,6 +51,9 @@ def validate_config(config):
         raise ValueError("Invalid Compose project name")
     if not Path(config["compose_file"]).is_absolute():
         raise ValueError("Compose file must be an absolute path")
+    # Old configurations retain GPU checks. Only an explicit JSON false opts out.
+    if type(config.get("require_gpu", True)) is not bool:
+        raise ValueError("require_gpu must be a boolean")
     for key in (
         "failure_threshold", "restart_cooldown", "restart_limit",
         "restart_window", "startup_timeout",
@@ -93,12 +96,13 @@ def _probe_health(config):
 
     # HTTP can remain healthy after a host driver/cgroup event removes CUDA
     # devices. Probe GPU access inside this container without loading a model.
-    result = command([
-        "/usr/bin/docker", "exec", container, "nvidia-smi",
-        "--query-gpu=uuid", "--format=csv,noheader",
-    ])
-    if result.returncode or not result.stdout.strip():
-        return "unhealthy"
+    if config.get("require_gpu", True):
+        result = command([
+            "/usr/bin/docker", "exec", container, "nvidia-smi",
+            "--query-gpu=uuid", "--format=csv,noheader",
+        ])
+        if result.returncode or not result.stdout.strip():
+            return "unhealthy"
 
     # Do not route localhost probes through an environment-configured proxy.
     opener = build_opener(ProxyHandler({}))

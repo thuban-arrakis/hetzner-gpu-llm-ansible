@@ -1,0 +1,12 @@
+---
+- name: Refresh Caddy package metadata
+  ansible.builtin.apt:
+    update_cache: true
+    lock_timeout: 120
+
+- name: Restart authenticated HTTPS gateway
+  ansible.builtin.systemd_service:
+    name: caddy.service
+    state: restarted
+    enabled: true
+  when: not ansible_check_mode

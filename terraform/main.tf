@@ -51,8 +51,17 @@ locals {
     action     = "accept"
   }]
 
+  public_api_rules = var.public_api_enabled ? [for port in ["80", "443"] : {
+    name       = "Public gateway ${port}"
+    ip_version = "ipv4"
+    protocol   = "tcp"
+    dst_port   = port
+    action     = "accept"
+  }] : []
+
   input_rules = concat(
     local.ssh_rules,
+    local.public_api_rules,
     local.tcp_reply_rules,
     local.dns_reply_rules,
     local.ntp_reply_rules,
@@ -84,7 +93,7 @@ resource "hetzner_firewall" "gpu" {
 
     precondition {
       condition     = length(local.input_rules) <= 10
-      error_message = "Hetzner Robot permits at most ten rules per direction."
+      error_message = "Hetzner Robot permits at most ten rules per direction. Public HTTPS requires exactly one administrator CIDR with this policy."
     }
   }
 }

@@ -3,6 +3,7 @@
   "compose_file": {{ (ollama_install_dir ~ '/compose.yml') | to_json }},
   "model": {{ ollama_model | to_json }},
   "api_url": {{ ('http://127.0.0.1:' ~ ollama_port | string) | to_json }},
+  "require_gpu": {{ (inference_accelerator | default('nvidia') == 'nvidia') | to_json }},
   "failure_threshold": {{ ollama_watchdog_failures | int }},
   "restart_cooldown": {{ ollama_watchdog_restart_cooldown | int }},
   "restart_limit": {{ ollama_watchdog_restart_limit | int }},

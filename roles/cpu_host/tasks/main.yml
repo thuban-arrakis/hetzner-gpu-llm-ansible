@@ -1,0 +1,41 @@
+---
+- name: Require explicit CPU mode on the supported Ubuntu platform
+  ansible.builtin.assert:
+    that:
+      - inference_accelerator | default('nvidia') == 'cpu'
+      - ansible_facts.distribution == 'Ubuntu'
+      - ansible_facts.distribution_version == '24.04'
+      - ansible_facts.architecture in ['x86_64', 'aarch64']
+      - ansible_facts.virtualization_type | default('') not in ['docker', 'podman', 'lxc', 'container']
+    fail_msg: CPU demo mode requires explicit inference_accelerator=cpu on an Ubuntu 24.04 amd64 or arm64 VM/server.
+
+- name: Install package repository prerequisites
+  ansible.builtin.apt:
+    name:
+      - ca-certificates
+      - curl
+      - gnupg
+      - python3-apt
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+    lock_timeout: 180
+
+- name: Collect installed package metadata
+  ansible.builtin.package_facts:
+    manager: apt
+
+- name: Reject conflicting distribution container packages
+  ansible.builtin.assert:
+    that:
+      - >-
+        ansible_facts.packages.keys() | list |
+        intersect(['docker.io', 'docker-compose', 'docker-compose-v2', 'docker-doc',
+                   'docker-buildx', 'podman-docker', 'containerd', 'runc']) | length == 0
+    fail_msg: Migrate conflicting container packages to Docker CE before using this dedicated inference VM.
+
+- name: Install and verify Docker without NVIDIA packages or devices
+  ansible.builtin.include_role:
+    name: docker_engine
+  vars:
+    docker_engine_version: "{{ cpu_host_docker_version }}"

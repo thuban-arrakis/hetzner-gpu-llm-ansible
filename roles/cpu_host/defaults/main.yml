@@ -1,0 +1,3 @@
+---
+# CPU mode is an explicit demo option; it never pretends to satisfy GPU checks.
+cpu_host_docker_version: ""

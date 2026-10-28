@@ -1,0 +1,116 @@
+---
+- name: Validate explicit public HTTPS configuration
+  ansible.builtin.assert:
+    that:
+      - public_api_enabled | bool
+      - public_api_address is match('^[0-9.]+$')
+      - public_api_username is match('^[a-z][a-z0-9_-]{0,31}$')
+      - public_api_password_hash_file is match('^/')
+      - public_api_caddy_version is match('^[0-9]+\.[0-9]+\.[0-9]+$')
+      - public_api_request_body_bytes | int >= 1024
+      - public_api_request_body_bytes | int <= 10485760
+      - public_api_response_timeout | int >= 30
+      - public_api_response_timeout | int <= 600
+      - public_api_upstream_port | int >= 1024
+      - public_api_upstream_port | int <= 65535
+    fail_msg: Set a public IPv4 address, safe username and protected external bcrypt file before enabling HTTPS.
+
+- name: Require a globally routable IPv4 address for public certificate issuance
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/python3
+      - -c
+      - |
+        import ipaddress, sys
+        address = ipaddress.ip_address(sys.argv[1])
+        assert address.version == 4 and address.is_global, 'A public IPv4 address is required'
+      - "{{ public_api_address }}"
+  changed_when: false
+  check_mode: false
+
+- name: Validate the protected authentication source before host changes
+  ansible.builtin.assert:
+    that:
+      - lookup('protected_bcrypt', public_api_password_hash_file) | length == 60
+  no_log: true
+
+- name: Download the pinned Caddy repository signing key
+  ansible.builtin.get_url:
+    url: https://dl.cloudsmith.io/public/caddy/stable/gpg.key
+    dest: /etc/apt/keyrings/caddy.asc
+    checksum: sha256:783dfee04b19e851a928cd87b34710213ebbe7628f98d9f34595ab83be578c00
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Configure the signed official Caddy stable repository
+  ansible.builtin.copy:
+    dest: /etc/apt/sources.list.d/caddy-stable.sources
+    content: |
+      Types: deb
+      URIs: https://dl.cloudsmith.io/public/caddy/stable/deb/debian
+      Suites: any-version
+      Components: main
+      Architectures: {{ 'arm64' if ansible_facts['architecture'] == 'aarch64' else 'amd64' }}
+      Signed-By: /etc/apt/keyrings/caddy.asc
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Refresh Caddy package metadata
+
+- name: Make new Caddy package metadata available before installation
+  ansible.builtin.meta: flush_handlers
+
+- name: Install the pinned HTTPS gateway without starting the package default site
+  ansible.builtin.apt:
+    name: "caddy={{ public_api_caddy_version }}"
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+    lock_timeout: 120
+    policy_rc_d: 101
+
+- name: Protect gateway configuration from other local users
+  ansible.builtin.file:
+    path: /etc/caddy
+    state: directory
+    owner: root
+    group: caddy
+    mode: "0750"
+
+- name: Install and validate the authenticated inference-only gateway
+  ansible.builtin.template:
+    src: Caddyfile.j2
+    dest: /etc/caddy/Caddyfile
+    owner: root
+    group: caddy
+    mode: "0640"
+    validate: /usr/bin/caddy validate --config %s --adapter caddyfile
+  no_log: true
+  diff: false
+  notify: Restart authenticated HTTPS gateway
+
+- name: Apply the authenticated configuration before inference startup
+  ansible.builtin.meta: flush_handlers
+
+- name: Enable HTTPS startup and automatic certificate renewal
+  ansible.builtin.systemd_service:
+    name: caddy.service
+    enabled: true
+    state: started
+  when: not ansible_check_mode
+
+- name: Verify public TLS and refusal of unauthenticated requests
+  ansible.builtin.uri:
+    url: "https://{{ public_api_address }}/api/tags"
+    method: GET
+    status_code: 401
+    validate_certs: true
+    follow_redirects: none
+    use_proxy: false
+    timeout: 15
+  register: public_api_tls_check
+  until: public_api_tls_check.status | default(0) == 401
+  retries: 30
+  delay: 10
+  when: not ansible_check_mode

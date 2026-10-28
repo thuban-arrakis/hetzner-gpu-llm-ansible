@@ -20,7 +20,14 @@ services:
       OLLAMA_MAX_LOADED_MODELS: "1"
       OLLAMA_MAX_QUEUE: {{ ollama_max_queue | string | to_json }}
       OLLAMA_KEEP_ALIVE: {{ ollama_keep_alive | to_json }}
+{% if inference_accelerator | default('nvidia') == 'nvidia' %}
       NVIDIA_DRIVER_CAPABILITIES: compute,utility
+{% else %}
+      CUDA_VISIBLE_DEVICES: "-1"
+      ROCR_VISIBLE_DEVICES: "-1"
+      GGML_VK_VISIBLE_DEVICES: "-1"
+      OLLAMA_VULKAN: "0"
+{% endif %}
     volumes:
       - type: bind
         source: {{ ollama_data_dir | to_json }}
@@ -32,6 +39,7 @@ services:
     memswap_limit: {{ ollama_memory_limit | to_json }}
     cpus: {{ ollama_cpu_limit | to_json }}
     pids_limit: 512
+{% if inference_accelerator | default('nvidia') == 'nvidia' %}
     deploy:
       resources:
         reservations:
@@ -40,6 +48,7 @@ services:
               count: all
               capabilities:
                 - gpu
+{% endif %}
     healthcheck:
       test: ["CMD", "ollama", "list"]
       interval: 30s

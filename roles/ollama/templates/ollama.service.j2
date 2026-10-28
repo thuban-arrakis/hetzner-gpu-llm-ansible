@@ -1,5 +1,5 @@
 [Unit]
-Description=Private GPU Ollama API
+Description=Private Ollama API ({{ inference_accelerator | default('nvidia') }})
 Requires=docker.service
 PartOf=docker.service
 After=docker.service network-online.target

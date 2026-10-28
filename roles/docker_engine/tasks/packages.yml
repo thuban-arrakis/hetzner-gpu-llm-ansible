@@ -1,0 +1,12 @@
+---
+- name: Install Docker Engine and Compose
+  ansible.builtin.apt:
+    name:
+      - "docker-ce{{ '=' ~ docker_engine_version if docker_engine_version | length > 0 else '' }}"
+      - "docker-ce-cli{{ '=' ~ docker_engine_version if docker_engine_version | length > 0 else '' }}"
+      - containerd.io
+      - docker-buildx-plugin
+      - docker-compose-plugin
+    state: present
+    lock_timeout: 180
+  notify: "{{ docker_engine_restart_handler }}"

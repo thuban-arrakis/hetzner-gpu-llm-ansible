@@ -1,0 +1,69 @@
+{
+    admin off
+    persist_config off
+    # Direct-IP HTTPS clients normally omit SNI.
+    default_sni {{ public_api_address }}
+    servers {
+        protocols h1 h2
+        max_header_size 16KiB
+        timeouts {
+            read_header 10s
+            read_body 30s
+            write {{ public_api_response_timeout }}s
+            idle 60s
+        }
+    }
+}
+
+https://{{ public_api_address }} {
+    tls {
+        issuer acme {
+            dir https://acme-v02.api.letsencrypt.org/directory
+            profile shortlived
+        }
+    }
+    header {
+        -Server
+        Strict-Transport-Security "max-age=31536000"
+        X-Content-Type-Options nosniff
+        Cache-Control no-store
+    }
+    route {
+        basic_auth {
+            {{ public_api_username }} {{ lookup('protected_bcrypt', public_api_password_hash_file) }}
+        }
+        request_body {
+            max_size {{ public_api_request_body_bytes }}
+        }
+        @catalogue {
+            method GET
+            path /api/tags /v1/models
+        }
+        @inference {
+            method POST
+            path /api/chat /api/generate /v1/chat/completions /v1/completions
+        }
+        handle @catalogue {
+            reverse_proxy 127.0.0.1:{{ public_api_upstream_port }} {
+                header_up -Authorization
+                header_up -Cookie
+                transport http {
+                    dial_timeout 5s
+                    response_header_timeout 15s
+                }
+            }
+        }
+        handle @inference {
+            reverse_proxy 127.0.0.1:{{ public_api_upstream_port }} {
+                header_up -Authorization
+                header_up -Cookie
+                transport http {
+                    dial_timeout 5s
+                    response_header_timeout {{ public_api_response_timeout }}s
+                }
+            }
+        }
+        # Model administration, arbitrary paths and methods are never proxied.
+        respond 404
+    }
+}

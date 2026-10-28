@@ -33,7 +33,18 @@ jobs:
           terraform_wrapper: false
       - name: Install controller validation tools
         run: python -m pip install -r requirements-dev.txt
+      - name: Install verified Caddy for local TLS gateway tests
+        run: |
+          curl --fail --silent --show-error --location --retry 3 \
+            https://github.com/caddyserver/caddy/releases/download/v2.11.7/caddy_2.11.7_linux_amd64.tar.gz \
+            --output "$RUNNER_TEMP/caddy.tar.gz"
+          caddy_sha512='a7a433a1b133efc3c8d10eb0b99d52a24b5ef5c322dc77f5282182b1c0402139ab'
+          caddy_sha512+='83f3a99f0c52409df77d20123fb0b523edad8a66d8f5e49136197bf61ef0e7'
+          printf '%s  %s\n' "$caddy_sha512" "$RUNNER_TEMP/caddy.tar.gz" | sha512sum --check --status
+          tar -xzf "$RUNNER_TEMP/caddy.tar.gz" -C "$RUNNER_TEMP" caddy
       - name: Validate Ansible and automation contracts
+        env:
+          CADDY_BINARY: ${{ runner.temp }}/caddy
         run: |
           ansible-playbook -i inventory/example.yml playbooks/deploy.yml --syntax-check
           ansible-lint
@@ -44,6 +55,8 @@ jobs:
           terraform -chdir=terraform fmt -check -recursive
           terraform -chdir=terraform init -backend=false -input=false -lockfile=readonly
           terraform -chdir=terraform validate
+          terraform -chdir=terraform/cloud init -backend=false -input=false -lockfile=readonly
+          terraform -chdir=terraform/cloud validate
       - name: Scan source and commit history for secrets
         run: |
           curl --fail --silent --show-error --location --retry 3 \

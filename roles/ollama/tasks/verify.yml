@@ -59,7 +59,7 @@
       - ollama_inference_result.json.eval_count | default(0) | int > 0
     fail_msg: The inference endpoint did not successfully generate a response.
 
-- name: Read GPU residency of the loaded model
+- name: Read accelerator residency of the loaded model
   ansible.builtin.uri:
     url: "http://127.0.0.1:{{ ollama_port }}/api/ps"
     method: GET
@@ -68,15 +68,34 @@
     timeout: 10
   register: ollama_running_models
 
+- name: Select the loaded model after inference
+  ansible.builtin.set_fact:
+    ollama_loaded_models: >-
+      {{ ollama_running_models.json.models
+         | selectattr('name', 'equalto', ollama_model) | list }}
+
+- name: Require the model to remain loaded for accelerator verification
+  ansible.builtin.assert:
+    that:
+      - ollama_loaded_models | length == 1
+      - ollama_loaded_models[0].size_vram is defined
+    fail_msg: Loaded model residency could not be verified after inference.
+
 - name: Reject silent CPU-only fallback
   ansible.builtin.assert:
     that:
       - >-
-        (ollama_running_models.json.models
-         | selectattr('name', 'equalto', ollama_model)
-         | map(attribute='size_vram') | sum) | int > 0
+        ollama_loaded_models[0].size_vram | int > 0
     fail_msg: >-
       Inference completed without reported GPU memory residency. Check the
       NVIDIA driver, container toolkit, device permissions, and available VRAM.
       This deployment requires GPU-backed inference and will not accept CPU-only
       fallback. This check proves GPU participation, not complete GPU offload.
+  when: inference_accelerator | default('nvidia') == 'nvidia'
+
+- name: Verify explicitly selected CPU demonstration mode
+  ansible.builtin.assert:
+    that:
+      - ollama_loaded_models[0].size_vram | int == 0
+    fail_msg: CPU demonstration mode unexpectedly reported GPU memory residency.
+  when: inference_accelerator | default('nvidia') == 'cpu'

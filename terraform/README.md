@@ -33,7 +33,8 @@ workflow runs these checks without infrastructure credentials. It does not run
 
 Copy `terraform.tfvars.example` to ignored `terraform.tfvars`, enter the actual
 Robot server number, and replace the example admin CIDR with the controller's
-public egress address. Up to three IPv4 CIDRs are supported. There is no default
+public egress address. Up to three IPv4 CIDRs are supported in private mode;
+public HTTPS mode supports exactly one because of Robot's ten-rule limit. There is no default
 administrator network and `/0` is rejected. The selected product must start with
 `GEX`; Ansible independently checks the physical NVIDIA GPU and its driver.
 
@@ -64,9 +65,17 @@ and IPv6, IPv4 ICMP, and outbound traffic. Hetzner infrastructure services are
 allowlisted to retain rescue and provider networking support. IPv6 filtering is
 explicitly enabled; Robot always permits ICMPv6.
 
-There is no public API listener rule and no IPv6 SSH rule. Ollama binds to
-`127.0.0.1:11434`; access it through the authenticated SSH tunnel described in the
-main README. The host's stateful firewall is still required because a stateless
+By default there is no public API listener rule and no IPv6 SSH rule. Set
+`public_api_enabled = true` to add separate IPv4 TCP 80 and 443 ingress rules for Caddy and
+ACME certificate validation. This also enables the optional Ansible gateway in
+the exported inventory and uses the server IPv4 as `public_api_address`; provide
+the protected authentication-hash file reference as documented in the main
+README. No DNS record is required. Port 80 is for ACME/HTTPS redirects, never
+plaintext API requests. TLS private keys are created on the server by Caddy and
+never pass through Terraform state.
+
+Ollama always binds to `127.0.0.1:11434`; it is reached through the authenticated
+gateway or SSH tunnel described in the main README. The host's stateful firewall is still required because a stateless
 reply rule does not prove that a packet belongs to an established connection.
 Review these rules if customizing connection tracking, source ports, or network services.
 

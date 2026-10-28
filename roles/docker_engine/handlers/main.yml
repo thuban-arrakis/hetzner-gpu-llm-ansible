@@ -1,0 +1,6 @@
+---
+- name: Docker engine restart Docker
+  ansible.builtin.systemd_service:
+    name: docker
+    state: restarted
+  when: not ansible_check_mode

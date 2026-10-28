@@ -1,0 +1,10 @@
+---
+public_api_enabled: false
+public_api_address: ""
+public_api_username: llm
+# Absolute controller-side reference, outside the checkout. Never the value.
+public_api_password_hash_file: ""
+public_api_caddy_version: 2.11.7
+public_api_request_body_bytes: 1048576
+public_api_response_timeout: 300
+public_api_upstream_port: "{{ ollama_port | default(11434) }}"

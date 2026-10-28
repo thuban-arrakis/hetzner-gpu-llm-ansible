@@ -1,4 +1,5 @@
 import json
+import io
 from subprocess import CompletedProcess, TimeoutExpired
 
 import pytest
@@ -86,3 +87,46 @@ def test_probe_failure_does_not_execute_untrusted_container_identifiers(watchdog
     monkeypatch.setattr(watchdog, "command", lambda *a, **k: CompletedProcess([], 0, b"unexpected-container", b""))
     with pytest.raises(RuntimeError):
         watchdog.probe_health(config)
+
+
+def test_explicit_cpu_mode_checks_health_without_running_nvidia_smi(watchdog, config, monkeypatch):
+    config["require_gpu"] = False
+    commands = []
+
+    def run(args, **kwargs):
+        commands.append(args)
+        if "ps" in args:
+            return CompletedProcess([], 0, b"a" * 64, b"")
+        if "inspect" in args:
+            state = {"Status": "running", "Health": {"Status": "healthy"}}
+            return CompletedProcess([], 0, json.dumps(state).encode(), b"")
+        raise AssertionError("CPU watchdog must not invoke GPU commands")
+
+    class Response(io.BytesIO):
+        status = 200
+
+    class Opener:
+        def open(self, *args, **kwargs):
+            return Response(json.dumps({"models": [{"name": config["model"]}]}).encode())
+
+    monkeypatch.setattr(watchdog, "command", run)
+    monkeypatch.setattr(watchdog, "build_opener", lambda *args: Opener())
+    assert watchdog.probe_health(config) == "healthy"
+    assert len(commands) == 2
+
+
+def test_omitted_accelerator_check_keeps_gpu_required(watchdog, config, monkeypatch):
+    results = iter([
+        CompletedProcess([], 0, b"a" * 64, b""),
+        CompletedProcess([], 0, json.dumps({"Status": "running", "Health": {"Status": "healthy"}}).encode(), b""),
+        CompletedProcess([], 1, b"", b""),
+    ])
+    monkeypatch.setattr(watchdog, "command", lambda *a, **k: next(results))
+    assert watchdog.probe_health(config) == "unhealthy"
+
+
+@pytest.mark.parametrize("value", ["false", 0, None])
+def test_gpu_checks_cannot_be_disabled_with_ambiguous_config(watchdog, config, value):
+    config["require_gpu"] = value
+    with pytest.raises(ValueError):
+        watchdog.validate_config(config)

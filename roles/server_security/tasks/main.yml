@@ -91,6 +91,38 @@
   environment:
     LC_ALL: C
 
+- name: Allow HTTPS and ACME validation when the public gateway is enabled
+  ansible.builtin.command:
+    argv:
+      - /usr/sbin/ufw
+      - allow
+      - "{{ item }}/tcp"
+      - comment
+      - llm-public-gateway
+  loop: [80, 443]
+  register: server_security_public_rule
+  changed_when: "'Skipping adding existing rule' not in server_security_public_rule.stdout"
+  environment:
+    LC_ALL: C
+  when: public_api_enabled | default(false) | bool
+
+- name: Remove managed public ingress when the gateway is disabled
+  ansible.builtin.command:
+    argv:
+      - /usr/sbin/ufw
+      - --force
+      - delete
+      - allow
+      - "{{ item }}/tcp"
+      - comment
+      - llm-public-gateway
+  loop: [80, 443]
+  register: server_security_remove_public_rule
+  changed_when: "'Rule deleted' in server_security_remove_public_rule.stdout"
+  environment:
+    LC_ALL: C
+  when: not (public_api_enabled | default(false) | bool)
+
 - name: Enable the host firewall after adding SSH access
   ansible.builtin.command: /usr/sbin/ufw --force enable
   when: "'Status: active' not in server_security_ufw_status.stdout"

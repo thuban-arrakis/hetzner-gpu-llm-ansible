@@ -1,0 +1,15 @@
+---
+- name: Configure the Docker repository
+  ansible.builtin.import_tasks: repository.yml
+
+- name: Refresh package metadata when Docker repository changes
+  ansible.builtin.apt:
+    update_cache: true
+    lock_timeout: 180
+  when: (docker_engine_key is changed) or (docker_engine_repository is changed)
+
+- name: Install Docker packages
+  ansible.builtin.import_tasks: packages.yml
+
+- name: Start and verify Docker
+  ansible.builtin.import_tasks: start.yml

@@ -18,6 +18,8 @@ output "ansible_inventory_yaml" {
           ansible_user                = var.ansible_user
           ansible_port                = 22
           server_security_admin_cidrs = var.admin_ipv4_cidrs
+          public_api_enabled          = var.public_api_enabled
+          public_api_address          = data.hetzner_server.gpu.server_ip
         }
       }
     }

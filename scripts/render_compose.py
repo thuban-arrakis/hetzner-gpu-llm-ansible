@@ -9,9 +9,12 @@ from jinja2 import Environment, FileSystemLoader, StrictUndefined
 import yaml
 
 
-def render(root: Path) -> str:
+def render(root: Path, accelerator: str = "nvidia") -> str:
+    if accelerator not in ("nvidia", "cpu"):
+        raise ValueError("Choose nvidia or explicit cpu mode")
     role = root / "roles" / "ollama"
     defaults = yaml.safe_load((role / "defaults" / "main.yml").read_text())
+    defaults["inference_accelerator"] = accelerator
     environment = Environment(
         loader=FileSystemLoader(role / "templates"),
         undefined=StrictUndefined,

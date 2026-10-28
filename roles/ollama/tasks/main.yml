@@ -2,6 +2,7 @@
 - name: Validate private inference configuration
   ansible.builtin.assert:
     that:
+      - inference_accelerator | default('nvidia') in ['nvidia', 'cpu']
       - ollama_bind_address == '127.0.0.1'
       - ollama_port | int >= 1024
       - ollama_port | int <= 65535
@@ -66,7 +67,7 @@
     group: "{{ ollama_service_user }}"
     mode: "0700"
 
-- name: Render the private GPU Compose service
+- name: Render the private inference Compose service
   ansible.builtin.template:
     src: compose.yml.j2
     dest: "{{ ollama_install_dir }}/compose.yml"
@@ -213,10 +214,10 @@
     state: started
   when: not ansible_check_mode
 
-- name: Verify model installation and real GPU inference after all service changes
+- name: Verify model installation and inference on the selected accelerator
   when: not ansible_check_mode
   block:
-    - name: Verify the model artifact and GPU inference
+    - name: Verify the model artifact and selected inference mode
       ansible.builtin.include_tasks: verify.yml
   rescue:
     - name: Disable recovery after failed acceptance checks
@@ -234,6 +235,6 @@
     - name: Report failed inference acceptance
       ansible.builtin.fail:
         msg: >-
-          Model or GPU acceptance failed. Ollama and its recovery timer have
+          Model or accelerator acceptance failed. Ollama and its recovery timer have
           been stopped and disabled. Correct the reported issue and rerun the
           playbook; model files remain on disk.

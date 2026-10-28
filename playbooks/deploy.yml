@@ -1,5 +1,5 @@
 ---
-- name: Configure a private GPU inference server
+- name: Configure an inference server
   hosts: gpu_servers
   become: true
   gather_facts: true
@@ -11,9 +11,23 @@
         that:
           - ansible_facts['distribution'] == 'Ubuntu'
           - ansible_facts['distribution_version'] == '24.04'
-          - ansible_facts['architecture'] == 'x86_64'
-        fail_msg: This project supports Ubuntu 24.04 LTS on x86_64 with an NVIDIA GPU.
+          - ansible_facts['architecture'] in ['x86_64', 'aarch64']
+          - inference_accelerator | default('nvidia') in ['nvidia', 'cpu']
+          - >-
+            inference_accelerator | default('nvidia') == 'cpu'
+            or ansible_facts['architecture'] == 'x86_64'
+        fail_msg: >-
+          This project supports Ubuntu 24.04 LTS: x86_64 for NVIDIA mode,
+          or x86_64/aarch64 for the explicit inference_accelerator=cpu demo.
+          The accelerator defaults to nvidia.
   roles:
     - role: gpu_host
+      when: inference_accelerator | default('nvidia') == 'nvidia'
+    - role: cpu_host
+      when: inference_accelerator | default('nvidia') == 'cpu'
     - role: server_security
+    # Install packages/services before starting GPU containers: systemd daemon
+    # reloads can disrupt the NVIDIA legacy runtime on some host combinations.
+    - role: public_api
+      when: public_api_enabled | default(false) | bool
     - role: ollama
