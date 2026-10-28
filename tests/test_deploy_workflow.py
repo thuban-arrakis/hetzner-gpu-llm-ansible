@@ -31,9 +31,10 @@ def test_controller_avoids_home_state_and_emits_only_success_metadata():
     assert checkout["with"]["persist-credentials"] == "false"
     assert checkout["with"]["set-safe-directory"] == "false"
     assert job["env"]["PIP_NO_CACHE_DIR"] == "1"
-    for key in ("PIP_CACHE_DIR", "PYTHONPYCACHEPREFIX", "XDG_CACHE_HOME", "TMPDIR"):
-        assert job["env"][key].startswith("${{ runner.temp }}")
+    assert all("runner." not in value for value in job["env"].values())
     deployment = next(step for step in job["steps"] if "ansible-playbook" in step.get("run", ""))
+    for key in ("PIP_CACHE_DIR", "PYTHONPYCACHEPREFIX", "XDG_CACHE_HOME", "TMPDIR"):
+        assert deployment["env"][key].startswith("${{ runner.temp }}")
     assert "pip install --no-cache-dir" in deployment["run"]
     assert "ANSIBLE_HOME=\"$RUNNER_TEMP/" in deployment["run"]
     evidence = job["steps"][-1]

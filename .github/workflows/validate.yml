@@ -33,6 +33,16 @@ jobs:
           terraform_wrapper: false
       - name: Install controller validation tools
         run: python -m pip install -r requirements-dev.txt
+      - name: Validate GitHub Actions syntax and expression contexts
+        run: |
+          curl --fail --silent --show-error --location --retry 3 \
+            https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz \
+            --output "$RUNNER_TEMP/actionlint.tar.gz"
+          printf '%s  %s\n' \
+            '8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8' \
+            "$RUNNER_TEMP/actionlint.tar.gz" | sha256sum --check --status
+          tar -xzf "$RUNNER_TEMP/actionlint.tar.gz" -C "$RUNNER_TEMP" actionlint
+          "$RUNNER_TEMP/actionlint" -shellcheck= -pyflakes=
       - name: Install verified Caddy for local TLS gateway tests
         run: |
           curl --fail --silent --show-error --location --retry 3 \
