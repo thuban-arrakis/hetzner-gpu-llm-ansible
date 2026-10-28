@@ -234,7 +234,8 @@ current resources do not intentionally store passwords in state.
   outside the checkout, set environment variable configuration
   `LLM_INVENTORY_FILE` as a GitHub environment **variable**, and provide its SSH
   agent/known_hosts out of band. No SSH private key is interpolated into workflow
-  scripts. The runner needs Python 3.12+ and OpenSSH.
+  scripts. The runner needs Python 3.12+, OpenSSH, and an up-to-date GitHub
+  Actions runner (2.329.0+ for the pinned Node.js 24 actions).
 
 The manual workflow performs Ansible deployment when deliberately invoked; it
 does not provision or purchase servers. Private-repository Actions minutes may
