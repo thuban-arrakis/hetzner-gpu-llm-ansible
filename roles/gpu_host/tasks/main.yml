@@ -1,0 +1,39 @@
+---
+- name: Validate the host before package changes
+  ansible.builtin.import_tasks: preflight.yml
+
+- name: Install host inspection and package repository prerequisites
+  ansible.builtin.apt:
+    name:
+      - ca-certificates
+      - curl
+      - gnupg
+      - mokutil
+      - pciutils
+      - python3-apt
+      - ubuntu-drivers-common
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+    lock_timeout: 180
+
+- name: Collect installed package metadata
+  ansible.builtin.package_facts:
+    manager: apt
+
+- name: Reject conflicting container packages instead of removing existing workloads
+  ansible.builtin.assert:
+    that:
+      - >-
+        ansible_facts.packages.keys() | list |
+        intersect(['docker.io', 'docker-compose', 'docker-compose-v2', 'docker-doc',
+                   'docker-buildx', 'podman-docker', 'containerd', 'runc']) | length == 0
+    fail_msg: >-
+      Conflicting distribution container packages are installed. Migrate them to
+      Docker CE in a maintenance window before using this dedicated-host role.
+
+- name: Configure and verify the NVIDIA host driver
+  ansible.builtin.include_tasks: driver.yml
+
+- name: Install and configure the Docker GPU runtime
+  ansible.builtin.include_tasks: docker.yml

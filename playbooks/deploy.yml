@@ -1,0 +1,19 @@
+---
+- name: Configure a private GPU inference server
+  hosts: gpu_servers
+  become: true
+  gather_facts: true
+  serial: 1
+  any_errors_fatal: true
+  pre_tasks:
+    - name: Require the documented target operating system
+      ansible.builtin.assert:
+        that:
+          - ansible_facts['distribution'] == 'Ubuntu'
+          - ansible_facts['distribution_version'] == '24.04'
+          - ansible_facts['architecture'] == 'x86_64'
+        fail_msg: This project supports Ubuntu 24.04 LTS on x86_64 with an NVIDIA GPU.
+  roles:
+    - role: gpu_host
+    - role: server_security
+    - role: ollama

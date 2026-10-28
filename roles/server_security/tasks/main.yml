@@ -1,0 +1,144 @@
+---
+- name: Read the current SSH source for lockout prevention
+  ansible.builtin.command: /usr/bin/printenv SSH_CONNECTION
+  become: false
+  register: server_security_ssh_connection
+  changed_when: false
+  failed_when: server_security_ssh_connection.rc not in [0, 1]
+  check_mode: false
+
+- name: Validate the SSH allowlist before changing firewall rules
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/python3
+      - -c
+      - |
+        import ipaddress, json, sys
+        networks = json.loads(sys.argv[1])
+        assert isinstance(networks, list) and networks, 'Set server_security_admin_cidrs first'
+        for item in networks:
+            net = ipaddress.ip_network(item, strict=True)
+            assert net.version == 4 and net.prefixlen > 0, 'Use explicit IPv4 admin CIDRs, never 0.0.0.0/0'
+        port = int(sys.argv[2])
+        assert 1 <= port <= 65535, 'Invalid SSH port'
+        current = sys.argv[3].split()
+        if current:
+            client = ipaddress.ip_address(current[0])
+            assert any(client in ipaddress.ip_network(n) for n in networks), 'Current SSH source is not in the allowlist'
+      - "{{ server_security_admin_cidrs | to_json }}"
+      - "{{ server_security_ssh_port | string }}"
+      - "{{ server_security_ssh_connection.stdout }}"
+  changed_when: false
+  check_mode: false
+
+- name: Install the host firewall
+  ansible.builtin.apt:
+    name: ufw
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+    lock_timeout: 120
+
+- name: Read the current firewall policy
+  ansible.builtin.command: /usr/sbin/ufw status verbose
+  register: server_security_ufw_status
+  changed_when: false
+  check_mode: false
+  environment:
+    LC_ALL: C
+
+- name: Deny unsolicited incoming connections
+  ansible.builtin.command: /usr/sbin/ufw default deny incoming
+  when: "'Default: deny (incoming)' not in server_security_ufw_status.stdout"
+  changed_when: true
+
+- name: Allow outgoing model and package downloads
+  ansible.builtin.command: /usr/sbin/ufw default allow outgoing
+  when: "'allow (outgoing)' not in server_security_ufw_status.stdout"
+  changed_when: true
+
+- name: Allow SSH from the administrator networks
+  ansible.builtin.command:
+    argv:
+      - /usr/sbin/ufw
+      - allow
+      - from
+      - "{{ item }}"
+      - to
+      - any
+      - port
+      - "{{ server_security_ssh_port | string }}"
+      - proto
+      - tcp
+      - comment
+      - llm-admin-ssh
+  loop: "{{ server_security_admin_cidrs }}"
+  register: server_security_ssh_rule
+  changed_when: "'Skipping adding existing rule' not in server_security_ssh_rule.stdout"
+  environment:
+    LC_ALL: C
+
+- name: Deny the raw Ollama port on non-loopback ingress
+  ansible.builtin.command:
+    argv:
+      - /usr/sbin/ufw
+      - deny
+      - "{{ server_security_api_port }}/tcp"
+      - comment
+      - llm-private-api
+  register: server_security_api_rule
+  changed_when: "'Skipping adding existing rule' not in server_security_api_rule.stdout"
+  environment:
+    LC_ALL: C
+
+- name: Enable the host firewall after adding SSH access
+  ansible.builtin.command: /usr/sbin/ufw --force enable
+  when: "'Status: active' not in server_security_ufw_status.stdout"
+  changed_when: true
+
+- name: Disable SSH password authentication without disabling SSH forwarding
+  ansible.builtin.copy:
+    dest: /etc/ssh/sshd_config.d/00-llm-security.conf
+    owner: root
+    group: root
+    mode: '0644'
+    content: |
+      # Managed by Ansible. Keep TCP forwarding for authenticated API tunnels.
+      PasswordAuthentication no
+      KbdInteractiveAuthentication no
+      PubkeyAuthentication yes
+      PermitRootLogin prohibit-password
+      X11Forwarding no
+    validate: /usr/sbin/sshd -t -f %s
+  when: server_security_harden_ssh | bool
+  notify: Reload SSH safely
+
+- name: Validate the complete SSH configuration
+  ansible.builtin.command: /usr/sbin/sshd -t
+  changed_when: false
+  when:
+    - server_security_harden_ssh | bool
+    - not ansible_check_mode
+
+- name: Read the effective SSH authentication policy
+  ansible.builtin.command: /usr/sbin/sshd -T
+  register: server_security_effective_sshd
+  changed_when: false
+  when:
+    - server_security_harden_ssh | bool
+    - not ansible_check_mode
+
+- name: Reject conflicting SSH authentication settings
+  ansible.builtin.assert:
+    that:
+      - "'passwordauthentication no' in server_security_effective_sshd.stdout_lines"
+      - "'kbdinteractiveauthentication no' in server_security_effective_sshd.stdout_lines"
+      - "'pubkeyauthentication yes' in server_security_effective_sshd.stdout_lines"
+      - >-
+        'permitrootlogin without-password' in server_security_effective_sshd.stdout_lines
+        or 'permitrootlogin prohibit-password' in server_security_effective_sshd.stdout_lines
+        or 'permitrootlogin no' in server_security_effective_sshd.stdout_lines
+    fail_msg: An existing SSH directive overrides the managed policy; review sshd_config before reloading.
+  when:
+    - server_security_harden_ssh | bool
+    - not ansible_check_mode

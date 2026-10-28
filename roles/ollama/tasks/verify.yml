@@ -1,0 +1,82 @@
+---
+- name: Read the installed model metadata
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ ollama_port }}/api/tags"
+    method: GET
+    status_code: 200
+    use_proxy: false
+    timeout: 10
+  register: ollama_installed_model_list
+
+- name: Select the configured model metadata
+  ansible.builtin.set_fact:
+    ollama_selected_models: >-
+      {{ ollama_installed_model_list.json.models
+         | selectattr('name', 'equalto', ollama_model) | list }}
+
+- name: Verify the configured model exists
+  ansible.builtin.assert:
+    that:
+      - ollama_selected_models | length == 1
+    fail_msg: The configured model was not found after provisioning.
+
+- name: Verify the approved model digest when configured
+  ansible.builtin.assert:
+    that:
+      - ollama_selected_models[0].digest == ollama_model_digest
+    fail_msg: >-
+      The model digest differs from the approved artifact. Review the model
+      update before changing ollama_model_digest; this role never silently
+      accepts a different artifact when a digest is configured.
+  when: ollama_model_digest | length > 0
+
+- name: Run a real local inference request
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ ollama_port }}/api/generate"
+    method: POST
+    body_format: json
+    body:
+      model: "{{ ollama_model }}"
+      prompt: Reply with the single word READY.
+      stream: false
+      think: false
+      keep_alive: "{{ ollama_keep_alive }}"
+      options:
+        temperature: 0
+        num_predict: 16
+        num_ctx: "{{ ollama_context_length | int }}"
+    status_code: 200
+    use_proxy: false
+    timeout: "{{ ollama_inference_timeout }}"
+  register: ollama_inference_result
+  changed_when: false
+
+- name: Verify that the model generated tokens successfully
+  ansible.builtin.assert:
+    that:
+      - ollama_inference_result.json.done | default(false) | bool
+      - ollama_inference_result.json.response | default('') | length > 0
+      - ollama_inference_result.json.eval_count | default(0) | int > 0
+    fail_msg: The inference endpoint did not successfully generate a response.
+
+- name: Read GPU residency of the loaded model
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ ollama_port }}/api/ps"
+    method: GET
+    status_code: 200
+    use_proxy: false
+    timeout: 10
+  register: ollama_running_models
+
+- name: Reject silent CPU-only fallback
+  ansible.builtin.assert:
+    that:
+      - >-
+        (ollama_running_models.json.models
+         | selectattr('name', 'equalto', ollama_model)
+         | map(attribute='size_vram') | sum) | int > 0
+    fail_msg: >-
+      Inference completed without reported GPU memory residency. Check the
+      NVIDIA driver, container toolkit, device permissions, and available VRAM.
+      This deployment requires GPU-backed inference and will not accept CPU-only
+      fallback. This check proves GPU participation, not complete GPU offload.

@@ -1,0 +1,5 @@
+---
+server_security_admin_cidrs: []
+server_security_ssh_port: "{{ ansible_port | default(22) }}"
+server_security_harden_ssh: true
+server_security_api_port: "{{ ollama_port | default(11434) }}"

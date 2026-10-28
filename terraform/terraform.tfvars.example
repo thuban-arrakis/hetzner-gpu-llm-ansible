@@ -1,0 +1,4 @@
+# Replace these documentation-only values. Do not commit your real tfvars.
+server_number     = 1234567
+admin_ipv4_cidrs   = ["198.51.100.10/32"]
+ansible_user       = "root"

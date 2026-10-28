@@ -1,0 +1,54 @@
+services:
+  ollama:
+    image: {{ ollama_image | to_json }}
+    user: {{ (ollama_service_uid | string ~ ':' ~ ollama_service_gid | string) | to_json }}
+    restart: unless-stopped
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    ports:
+      - {{ (ollama_bind_address ~ ':' ~ ollama_port | string ~ ':11434') | to_json }}
+    environment:
+      HOME: /var/lib/ollama
+      OLLAMA_MODELS: /var/lib/ollama/models
+      OLLAMA_HOST: 0.0.0.0:11434
+      OLLAMA_NO_CLOUD: "1"
+      OLLAMA_CONTEXT_LENGTH: {{ ollama_context_length | string | to_json }}
+      OLLAMA_NUM_PARALLEL: {{ ollama_parallel_requests | string | to_json }}
+      OLLAMA_MAX_LOADED_MODELS: "1"
+      OLLAMA_MAX_QUEUE: {{ ollama_max_queue | string | to_json }}
+      OLLAMA_KEEP_ALIVE: {{ ollama_keep_alive | to_json }}
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    volumes:
+      - type: bind
+        source: {{ ollama_data_dir | to_json }}
+        target: /var/lib/ollama
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=1073741824,mode=1777
+    shm_size: 1gb
+    mem_limit: {{ ollama_memory_limit | to_json }}
+    memswap_limit: {{ ollama_memory_limit | to_json }}
+    cpus: {{ ollama_cpu_limit | to_json }}
+    pids_limit: 512
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities:
+                - gpu
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 30s
+      timeout: 10s
+      start_period: 60s
+      retries: 3
+    stop_grace_period: 60s
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"

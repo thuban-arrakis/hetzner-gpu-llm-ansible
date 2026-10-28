@@ -1,0 +1,7 @@
+---
+- name: Gpu host restart Docker
+  ansible.builtin.systemd_service:
+    name: docker
+    enabled: true
+    state: restarted
+  when: not ansible_check_mode

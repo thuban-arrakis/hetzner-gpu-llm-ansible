@@ -1,0 +1,239 @@
+---
+- name: Validate private inference configuration
+  ansible.builtin.assert:
+    that:
+      - ollama_bind_address == '127.0.0.1'
+      - ollama_port | int >= 1024
+      - ollama_port | int <= 65535
+      - ollama_image is match('^[a-zA-Z0-9][a-zA-Z0-9./:_-]+@sha256:[a-f0-9]{64}$')
+      - ollama_model is match('^[a-zA-Z0-9][a-zA-Z0-9._/+-]*:[a-zA-Z0-9._+-]+$')
+      - ollama_model_digest == '' or ollama_model_digest is match('^[a-f0-9]{64}$')
+      - ollama_project_name is match('^[a-z0-9][a-z0-9_-]*$')
+      - ollama_install_dir is match('^/[a-zA-Z0-9/_-]+$')
+      - ollama_data_dir is match('^/[a-zA-Z0-9/_-]+$')
+      - ollama_install_dir != ollama_data_dir
+      - ollama_context_length | int > 0
+      - ollama_parallel_requests | int > 0
+      - ollama_max_queue | int > 0
+      - ollama_cpu_limit | float > 0
+      - ollama_memory_limit is match('^[1-9][0-9]*[gGmM]$')
+      - ollama_startup_timeout | int >= 60
+      - ollama_model_pull_timeout | int >= 60
+      - ollama_inference_timeout | int >= 60
+      - ollama_watchdog_interval | int >= 30
+      - ollama_watchdog_failures | int > 0
+      - ollama_watchdog_restart_cooldown | int >= 60
+      - ollama_watchdog_restart_limit | int > 0
+      - ollama_watchdog_restart_window | int >= ollama_watchdog_restart_cooldown | int
+    fail_msg: >-
+      Use a digest-pinned image, an explicit model tag, safe absolute paths,
+      positive resource limits, and the loopback-only API. Public exposure
+      requires a separate authenticated gateway; changing the bind address is
+      intentionally refused.
+
+- name: Create the model storage group
+  ansible.builtin.group:
+    name: "{{ ollama_service_user }}"
+    gid: "{{ ollama_service_gid }}"
+    system: true
+
+- name: Create the unprivileged inference identity
+  ansible.builtin.user:
+    name: "{{ ollama_service_user }}"
+    uid: "{{ ollama_service_uid }}"
+    group: "{{ ollama_service_user }}"
+    system: true
+    create_home: false
+    home: "{{ ollama_data_dir }}"
+    shell: /usr/sbin/nologin
+
+- name: Create root-managed deployment directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0750"
+  loop:
+    - "{{ ollama_install_dir }}"
+    - /usr/local/libexec
+
+- name: Create persistent private model storage
+  ansible.builtin.file:
+    path: "{{ ollama_data_dir }}"
+    state: directory
+    owner: "{{ ollama_service_user }}"
+    group: "{{ ollama_service_user }}"
+    mode: "0700"
+
+- name: Render the private GPU Compose service
+  ansible.builtin.template:
+    src: compose.yml.j2
+    dest: "{{ ollama_install_dir }}/compose.yml"
+    owner: root
+    group: root
+    mode: "0640"
+  notify: Restart Ollama
+
+- name: Install the systemd service
+  ansible.builtin.template:
+    src: ollama.service.j2
+    dest: /etc/systemd/system/ollama.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart Ollama
+
+- name: Install the bounded health checker
+  ansible.builtin.copy:
+    src: watchdog.py
+    dest: /usr/local/libexec/ollama-watchdog.py
+    owner: root
+    group: root
+    mode: "0750"
+
+- name: Install the root-owned health checker configuration
+  ansible.builtin.template:
+    src: watchdog.json.j2
+    dest: "{{ ollama_install_dir }}/watchdog.json"
+    owner: root
+    group: root
+    mode: "0640"
+
+- name: Install the health checker service and timer before starting GPU containers
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/etc/systemd/system/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - ollama-watchdog.service
+    - ollama-watchdog.timer
+  notify:
+    - Restart Ollama
+    - Reload Ollama watchdog timer
+
+- name: Validate the rendered Compose configuration
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - compose
+      - --project-name
+      - "{{ ollama_project_name }}"
+      - --file
+      - "{{ ollama_install_dir }}/compose.yml"
+      - config
+      - --quiet
+  changed_when: false
+  when: not ansible_check_mode
+
+# Inspect only the public image ID, never the image environment.
+- name: Inspect the pinned inference image
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - image
+      - inspect
+      - --format
+      - "{{ '{{.Id}}' }}"
+      - "{{ ollama_image }}"
+  register: ollama_image_state
+  changed_when: false
+  failed_when: ollama_image_state.rc not in [0, 1]
+  when: not ansible_check_mode
+
+- name: Download the digest-pinned inference image when absent
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - pull
+      - "{{ ollama_image }}"
+  async: "{{ ollama_model_pull_timeout }}"
+  poll: 15
+  changed_when: true
+  when:
+    - not ansible_check_mode
+    - ollama_image_state.rc != 0
+
+- name: Apply service changes before model provisioning
+  ansible.builtin.meta: flush_handlers
+
+- name: Enable automatic startup and start the inference service
+  ansible.builtin.systemd_service:
+    name: ollama.service
+    enabled: true
+    state: started
+  when: not ansible_check_mode
+
+- name: Wait for the local model catalogue
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ ollama_port }}/api/tags"
+    method: GET
+    status_code: 200
+    use_proxy: false
+    timeout: 10
+  register: ollama_model_list
+  until: ollama_model_list.status == 200
+  retries: "{{ (ollama_startup_timeout | int / 5) | round(0, 'ceil') | int }}"
+  delay: 5
+  when: not ansible_check_mode
+
+- name: Download the model once while excluding watchdog recovery
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/flock
+      - --exclusive
+      - --wait
+      - "{{ ollama_model_pull_timeout | string }}"
+      - /run/ollama/maintenance.lock
+      - /usr/bin/docker
+      - compose
+      - --project-name
+      - "{{ ollama_project_name }}"
+      - --file
+      - "{{ ollama_install_dir }}/compose.yml"
+      - exec
+      - --no-TTY
+      - ollama
+      - ollama
+      - pull
+      - "{{ ollama_model }}"
+  async: "{{ ollama_model_pull_timeout | int + 30 }}"
+  poll: 15
+  changed_when: true
+  when:
+    - not ansible_check_mode
+    - ollama_model not in (ollama_model_list.json.models | map(attribute='name') | list)
+
+- name: Enable periodic health checks and bounded recovery
+  ansible.builtin.systemd_service:
+    name: ollama-watchdog.timer
+    enabled: true
+    state: started
+  when: not ansible_check_mode
+
+- name: Verify model installation and real GPU inference after all service changes
+  when: not ansible_check_mode
+  block:
+    - name: Verify the model artifact and GPU inference
+      ansible.builtin.include_tasks: verify.yml
+  rescue:
+    - name: Disable recovery after failed acceptance checks
+      ansible.builtin.systemd_service:
+        name: ollama-watchdog.timer
+        enabled: false
+        state: stopped
+
+    - name: Stop and disable the service after failed acceptance checks
+      ansible.builtin.systemd_service:
+        name: ollama.service
+        enabled: false
+        state: stopped
+
+    - name: Report failed inference acceptance
+      ansible.builtin.fail:
+        msg: >-
+          Model or GPU acceptance failed. Ollama and its recovery timer have
+          been stopped and disabled. Correct the reported issue and rerun the
+          playbook; model files remain on disk.

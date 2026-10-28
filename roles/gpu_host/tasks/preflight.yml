@@ -1,0 +1,44 @@
+---
+# Also callable as include_role: {name: gpu_host, tasks_from: preflight} from
+# playbook pre_tasks so a CPU-only target is rejected before firewall changes.
+- name: Validate the supported GPU host platform
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.distribution == 'Ubuntu'
+      - ansible_facts.distribution_version == '24.04'
+      - ansible_facts.architecture == 'x86_64'
+      - ansible_facts.virtualization_type | default('') not in ['docker', 'podman', 'lxc', 'container']
+      - gpu_host_driver_package is match('^$|^nvidia-driver-[0-9]+(-server)?(-open)?$')
+      - gpu_host_min_driver_version is match('^[0-9]+\.[0-9]+(\.[0-9]+)?$')
+      - gpu_host_container_toolkit_version is match('^[0-9]+\.[0-9]+\.[0-9]+-[0-9]+$')
+    fail_msg: >-
+      Use a dedicated Ubuntu 24.04 amd64 GPU host with valid role variables.
+      A regular Hetzner Cloud CPU instance cannot satisfy the NVIDIA requirement.
+
+- name: Read NVIDIA display and compute PCI devices
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/python3
+      - -c
+      - |
+        import json
+        from pathlib import Path
+
+        devices = []
+        for path in Path('/sys/bus/pci/devices').iterdir():
+            vendor = int((path / 'vendor').read_text().strip(), 16)
+            device_class = int((path / 'class').read_text().strip(), 16)
+            if vendor == 0x10DE and device_class >> 8 in (0x0300, 0x0302):
+                devices.append(path.name)
+        print(json.dumps(devices))
+  register: gpu_host_pci
+  changed_when: false
+  check_mode: false
+
+- name: Require an actual NVIDIA GPU before proceeding
+  ansible.builtin.assert:
+    that:
+      - gpu_host_pci.stdout | from_json | length > 0
+    fail_msg: >-
+      No NVIDIA VGA/3D PCI device was detected. The playbook intentionally refuses
+      to deploy a CPU fallback. Provide a GPU server or PCI-passthrough GPU VM.

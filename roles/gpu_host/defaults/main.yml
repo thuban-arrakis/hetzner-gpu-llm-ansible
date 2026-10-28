@@ -1,0 +1,19 @@
+---
+# Ubuntu selects a GPU-compatible, supported server driver by default. An
+# explicit Ubuntu package can be used after checking the target GPU, for example
+# nvidia-driver-580-open or nvidia-driver-580-server-open. Do not use NVIDIA CUDA
+# repository package names here: this role deliberately uses Ubuntu's archive.
+gpu_host_driver_package: ""
+
+# Project baseline for the CUDA 13 backend shipped by the pinned Ollama image.
+# It is intentionally more conservative than Ollama's general minimum driver.
+gpu_host_min_driver_version: "580.65.06"
+
+# Reboots can interrupt other workloads. Enable explicitly on a dedicated host.
+gpu_host_allow_reboot: false
+gpu_host_reboot_timeout: 900
+
+# Empty installs the stable Docker packages if absent, without upgrading them on
+# every run. Supply a full apt version to pin docker-ce and docker-ce-cli.
+gpu_host_docker_version: ""
+gpu_host_container_toolkit_version: "1.20.1-1"

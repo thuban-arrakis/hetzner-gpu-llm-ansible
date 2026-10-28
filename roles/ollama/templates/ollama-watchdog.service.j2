@@ -1,0 +1,21 @@
+[Unit]
+Description=Check private Ollama API and recover an unhealthy container
+After=docker.service ollama.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /usr/local/libexec/ollama-watchdog.py --config {{ ollama_install_dir }}/watchdog.json
+TimeoutStartSec={{ ollama_startup_timeout | int + 240 }}
+StateDirectory=ollama-watchdog
+StateDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ReadWritePaths=/run/ollama /var/lib/ollama-watchdog
+
+# Docker socket access is root-equivalent. Only root can edit the script/config.

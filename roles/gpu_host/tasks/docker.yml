@@ -1,0 +1,185 @@
+---
+- name: Create the apt signing-key directory
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Install Docker's repository signing key
+  ansible.builtin.get_url:
+    url: https://download.docker.com/linux/ubuntu/gpg
+    dest: /etc/apt/keyrings/docker.asc
+    owner: root
+    group: root
+    mode: '0644'
+    timeout: 30
+  register: gpu_host_docker_key
+
+- name: Configure Docker's signed Ubuntu repository
+  ansible.builtin.copy:
+    dest: /etc/apt/sources.list.d/docker.sources
+    content: |
+      Types: deb
+      URIs: https://download.docker.com/linux/ubuntu
+      Suites: noble
+      Components: stable
+      Architectures: amd64
+      Signed-By: /etc/apt/keyrings/docker.asc
+    owner: root
+    group: root
+    mode: '0644'
+  register: gpu_host_docker_repository
+
+- name: Install NVIDIA's container-toolkit repository signing key
+  ansible.builtin.get_url:
+    url: https://nvidia.github.io/libnvidia-container/gpgkey
+    dest: /etc/apt/keyrings/nvidia-container-toolkit.asc
+    owner: root
+    group: root
+    mode: '0644'
+    timeout: 30
+  register: gpu_host_nvidia_key
+
+- name: Configure NVIDIA's signed stable container-toolkit repository
+  ansible.builtin.copy:
+    dest: /etc/apt/sources.list.d/nvidia-container-toolkit.sources
+    content: |
+      Types: deb
+      URIs: https://nvidia.github.io/libnvidia-container/stable/deb/amd64
+      Suites: /
+      Architectures: amd64
+      Signed-By: /etc/apt/keyrings/nvidia-container-toolkit.asc
+    owner: root
+    group: root
+    mode: '0644'
+  register: gpu_host_nvidia_repository
+
+- name: Refresh package metadata after repository changes
+  ansible.builtin.apt:
+    update_cache: true
+    lock_timeout: 180
+  when: >-
+    (gpu_host_docker_key is changed) or (gpu_host_docker_repository is changed) or
+    (gpu_host_nvidia_key is changed) or (gpu_host_nvidia_repository is changed)
+
+- name: Install Docker Engine and Compose
+  ansible.builtin.apt:
+    name:
+      - "docker-ce{{ '=' ~ gpu_host_docker_version if gpu_host_docker_version | length > 0 else '' }}"
+      - "docker-ce-cli{{ '=' ~ gpu_host_docker_version if gpu_host_docker_version | length > 0 else '' }}"
+      - containerd.io
+      - docker-buildx-plugin
+      - docker-compose-plugin
+    state: present
+    lock_timeout: 180
+  notify: Gpu host restart Docker
+
+- name: Install the pinned NVIDIA Container Toolkit packages
+  ansible.builtin.apt:
+    name:
+      - "nvidia-container-toolkit={{ gpu_host_container_toolkit_version }}"
+      - "nvidia-container-toolkit-base={{ gpu_host_container_toolkit_version }}"
+      - "libnvidia-container-tools={{ gpu_host_container_toolkit_version }}"
+      - "libnvidia-container1={{ gpu_host_container_toolkit_version }}"
+    state: present
+    lock_timeout: 180
+  notify: Gpu host restart Docker
+
+- name: Ensure the Docker configuration directory exists
+  ansible.builtin.file:
+    path: /etc/docker
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Inspect Docker configuration before runtime registration
+  ansible.builtin.stat:
+    path: /etc/docker/daemon.json
+    follow: false
+    checksum_algorithm: sha256
+  register: gpu_host_docker_before
+
+- name: Refuse an unexpected Docker daemon configuration target
+  ansible.builtin.assert:
+    that:
+      - >-
+        not gpu_host_docker_before.stat.exists or
+        (gpu_host_docker_before.stat.isreg and not gpu_host_docker_before.stat.islnk and
+         gpu_host_docker_before.stat.uid == 0)
+    fail_msg: Docker daemon.json must be a regular root-owned file, not a symlink.
+
+- name: Register the NVIDIA runtime while preserving other daemon settings
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/nvidia-ctk
+      - runtime
+      - configure
+      - --runtime=docker
+  changed_when: false
+  when: not ansible_check_mode
+
+- name: Inspect Docker configuration after runtime registration
+  ansible.builtin.stat:
+    path: /etc/docker/daemon.json
+    checksum_algorithm: sha256
+  register: gpu_host_docker_after
+
+- name: Schedule Docker restart only when runtime configuration changed
+  ansible.builtin.debug:
+    msg: NVIDIA runtime registration checked without replacing other Docker settings.
+  changed_when: >-
+    gpu_host_docker_before.stat.checksum | default('') !=
+    gpu_host_docker_after.stat.checksum | default('')
+  notify: Gpu host restart Docker
+
+- name: Enable Docker startup
+  ansible.builtin.systemd_service:
+    name: docker
+    enabled: true
+    state: started
+  when: not ansible_check_mode
+
+- name: Apply runtime configuration before deploying GPU containers
+  ansible.builtin.meta: flush_handlers
+
+- name: Read the running Docker Engine version
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - version
+      - --format
+      - "{{ '{{.Server.Version}}' }}"
+  register: gpu_host_docker_engine_version
+  changed_when: false
+  when: not ansible_check_mode
+
+- name: Require Docker's corrected localhost publishing behavior
+  ansible.builtin.assert:
+    that:
+      - gpu_host_docker_engine_version.stdout | trim is version('28.0.0', '>=')
+    fail_msg: >-
+      Docker Engine 28.0.0 or newer is required. Earlier versions can expose
+      localhost-published ports to other hosts on the same layer-2 network.
+      Upgrade Docker during a maintenance window before deploying the API.
+  when: not ansible_check_mode
+
+- name: Read the Docker Compose plugin version
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - compose
+      - version
+      - --short
+  register: gpu_host_compose_version
+  changed_when: false
+  when: not ansible_check_mode
+
+- name: Require the Compose startup-healthcheck interface
+  ansible.builtin.assert:
+    that:
+      - gpu_host_compose_version.stdout | trim | regex_replace('^v', '') is version('2.20.0', '>=')
+    fail_msg: Docker Compose 2.20.0 or newer is required for the managed service.
+  when: not ansible_check_mode

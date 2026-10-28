@@ -1,0 +1,11 @@
+[Unit]
+Description=Periodic private Ollama API health check
+
+[Timer]
+OnBootSec=3min
+OnUnitInactiveSec={{ ollama_watchdog_interval }}s
+RandomizedDelaySec=10s
+Unit=ollama-watchdog.service
+
+[Install]
+WantedBy=timers.target

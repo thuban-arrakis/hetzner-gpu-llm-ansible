@@ -1,0 +1,25 @@
+[Unit]
+Description=Private GPU Ollama API
+Requires=docker.service
+PartOf=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=600
+StartLimitBurst=3
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory={{ ollama_install_dir }}
+RuntimeDirectory=ollama
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=yes
+ExecStart=/usr/bin/flock --exclusive --wait {{ ollama_model_pull_timeout }} /run/ollama/maintenance.lock /usr/bin/docker compose --project-name {{ ollama_project_name }} --file {{ ollama_install_dir }}/compose.yml up --detach --wait --wait-timeout {{ ollama_startup_timeout }} --pull never
+ExecStop=/usr/bin/flock --exclusive --wait {{ ollama_model_pull_timeout }} /run/ollama/maintenance.lock /usr/bin/docker compose --project-name {{ ollama_project_name }} --file {{ ollama_install_dir }}/compose.yml down --timeout 60
+TimeoutStartSec={{ ollama_model_pull_timeout | int + ollama_startup_timeout | int + 60 }}
+TimeoutStopSec={{ ollama_model_pull_timeout | int + 90 }}
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target

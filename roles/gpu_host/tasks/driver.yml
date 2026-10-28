@@ -1,0 +1,205 @@
+---
+- name: Inspect the currently usable NVIDIA driver
+  ansible.builtin.command:
+    argv:
+      - nvidia-smi
+      - --query-gpu=driver_version
+      - --format=csv,noheader
+  register: gpu_host_driver_before
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Determine whether the driver needs installation
+  ansible.builtin.set_fact:
+    gpu_host_driver_install_required: >-
+      {{
+        gpu_host_driver_before.rc != 0 or
+        (gpu_host_driver_before.stdout_lines | default([]) | length == 0) or
+        ((gpu_host_driver_before.stdout_lines | default(['0'], true) | first | trim)
+          is version(gpu_host_min_driver_version, '<')) or
+        (gpu_host_driver_package | length > 0 and
+          gpu_host_driver_package not in ansible_facts.packages)
+      }}
+
+- name: Check whether the host booted using UEFI
+  ansible.builtin.stat:
+    path: /sys/firmware/efi
+  register: gpu_host_efi
+
+- name: Inspect Secure Boot when UEFI is present
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/mokutil
+      - --sb-state
+  register: gpu_host_secure_boot
+  changed_when: false
+  check_mode: false
+  when: gpu_host_efi.stat.exists
+
+- name: Require signed-driver preparation before unattended Secure Boot changes
+  ansible.builtin.assert:
+    that:
+      - >-
+        not (gpu_host_efi.stat.exists and
+             'SecureBoot enabled' in (gpu_host_secure_boot.stdout | default('')) and
+             gpu_host_driver_install_required)
+    fail_msg: >-
+      Secure Boot is enabled and the GPU driver needs installation or an upgrade.
+      Prepare and validate an Ubuntu-signed compatible driver (or enroll the
+      appropriate MOK through the provider console), then rerun. This playbook
+      never disables Secure Boot or handles MOK passwords.
+
+- name: Require a maintenance reboot before modifying GPU drivers
+  ansible.builtin.assert:
+    that:
+      - not gpu_host_driver_install_required or gpu_host_allow_reboot | bool
+    fail_msg: >-
+      Driver installation can require a reboot. Set gpu_host_allow_reboot=true
+      for a dedicated host during an approved maintenance window, then rerun.
+
+- name: Install headers matching the running kernel
+  ansible.builtin.apt:
+    name: "linux-headers-{{ ansible_facts.kernel }}"
+    state: present
+    lock_timeout: 180
+  when: gpu_host_driver_install_required
+
+- name: Install the explicitly selected Ubuntu NVIDIA driver
+  ansible.builtin.apt:
+    name: "{{ gpu_host_driver_package }}"
+    state: present
+    lock_timeout: 180
+  register: gpu_host_explicit_driver
+  when:
+    - gpu_host_driver_install_required
+    - gpu_host_driver_package | length > 0
+
+- name: Install Ubuntu's recommended GPU compute driver
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/ubuntu-drivers
+      - install
+      - --gpgpu
+  environment:
+    DEBIAN_FRONTEND: noninteractive
+  register: gpu_host_auto_driver
+  changed_when: true
+  when:
+    - gpu_host_driver_install_required
+    - gpu_host_driver_package | length == 0
+
+- name: Inspect the installed NVIDIA kernel module before rebooting
+  ansible.builtin.command:
+    argv:
+      - /usr/sbin/modinfo
+      - -F
+      - version
+      - nvidia
+  register: gpu_host_module_version
+  changed_when: false
+  when:
+    - gpu_host_driver_install_required
+    - not ansible_check_mode
+
+- name: Verify a compatible driver module was installed for the current kernel
+  ansible.builtin.assert:
+    that:
+      - gpu_host_module_version.stdout | trim is version(gpu_host_min_driver_version, '>=')
+    fail_msg: >-
+      Ubuntu did not install a driver meeting the configured baseline for this
+      kernel. Select a supported driver package and kernel before rebooting.
+  when:
+    - gpu_host_driver_install_required
+    - not ansible_check_mode
+
+- name: Refresh installed packages after driver selection
+  ansible.builtin.package_facts:
+    manager: apt
+  when:
+    - gpu_host_driver_install_required
+    - not ansible_check_mode
+
+- name: Record the selected NVIDIA driver branch
+  ansible.builtin.set_fact:
+    gpu_host_driver_branch: "{{ gpu_host_module_version.stdout | trim | regex_search('^[0-9]+') }}"
+  when:
+    - gpu_host_driver_install_required
+    - not ansible_check_mode
+
+- name: Install nvidia-smi utilities matching the selected driver family
+  ansible.builtin.apt:
+    name: >-
+      {{ 'nvidia-utils-' ~ gpu_host_driver_branch ~
+         ('-server' if ('libnvidia-compute-' ~ gpu_host_driver_branch ~ '-server')
+          in ansible_facts.packages else '') }}
+    state: present
+    lock_timeout: 180
+  when:
+    - gpu_host_driver_install_required
+    - not ansible_check_mode
+
+- name: Mark a reboot after changing the NVIDIA driver
+  ansible.builtin.copy:
+    dest: /var/run/gpu-host-driver-reboot-required
+    content: "GPU driver installation requires a maintenance reboot.\n"
+    owner: root
+    group: root
+    mode: '0600'
+  when: >-
+    (gpu_host_explicit_driver is changed) or
+    (gpu_host_auto_driver is changed)
+
+- name: Check Ubuntu's reboot-required marker
+  ansible.builtin.stat:
+    path: /var/run/reboot-required
+  register: gpu_host_os_reboot
+
+- name: Check the GPU driver's reboot-required marker
+  ansible.builtin.stat:
+    path: /var/run/gpu-host-driver-reboot-required
+  register: gpu_host_driver_reboot
+
+- name: Require explicit consent for a pending host reboot
+  ansible.builtin.assert:
+    that:
+      - >-
+        not (gpu_host_os_reboot.stat.exists or gpu_host_driver_reboot.stat.exists) or
+        gpu_host_allow_reboot | bool
+    fail_msg: >-
+      A host reboot is pending. Set gpu_host_allow_reboot=true during a maintenance
+      window or reboot the machine and rerun the playbook.
+
+- name: Reboot after a driver or kernel change
+  ansible.builtin.reboot:
+    reboot_timeout: "{{ gpu_host_reboot_timeout }}"
+    connect_timeout: 10
+    post_reboot_delay: 15
+    test_command: /usr/bin/true
+  when:
+    - gpu_host_allow_reboot | bool
+    - gpu_host_os_reboot.stat.exists or gpu_host_driver_reboot.stat.exists
+
+- name: Verify that the NVIDIA kernel driver can enumerate GPUs
+  ansible.builtin.command:
+    argv:
+      - nvidia-smi
+      - --query-gpu=driver_version
+      - --format=csv,noheader
+  register: gpu_host_driver_after
+  changed_when: false
+  retries: 6
+  delay: 5
+  until: gpu_host_driver_after.rc == 0
+  when: not ansible_check_mode
+
+- name: Require the configured CUDA-compatible driver baseline
+  ansible.builtin.assert:
+    that:
+      - gpu_host_driver_after.stdout_lines | length > 0
+      - (gpu_host_driver_after.stdout_lines | first | trim) is version(gpu_host_min_driver_version, '>=')
+    fail_msg: >-
+      The installed GPU driver does not satisfy this project's driver baseline.
+      Select a compatible Ubuntu driver with gpu_host_driver_package and rerun.
+      Blackwell GPUs require the open kernel-module driver variant.
+  when: not ansible_check_mode

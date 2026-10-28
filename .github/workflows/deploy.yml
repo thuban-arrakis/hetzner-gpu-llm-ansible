@@ -1,0 +1,43 @@
+---
+name: Deploy to an existing GPU server
+on:
+  workflow_dispatch:
+    inputs:
+      allow_reboot:
+        description: Allow an NVIDIA driver installation and host reboot during this maintenance run
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gpu-production-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    # Provision this dedicated management runner separately; never run PR jobs on it.
+    if: github.ref == 'refs/heads/main'
+    runs-on: [self-hosted, linux, x64, llm-deploy]
+    environment: gpu-production
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Check protected controller configuration
+        env:
+          LLM_INVENTORY_FILE: ${{ vars.LLM_INVENTORY_FILE }}
+        run: python3 scripts/check_deploy_inventory.py
+      - name: Deploy with the controller's SSH agent and pinned known_hosts
+        env:
+          LLM_INVENTORY_FILE: ${{ vars.LLM_INVENTORY_FILE }}
+          ALLOW_REBOOT: ${{ inputs.allow_reboot }}
+        run: |
+          python3 -m venv "$RUNNER_TEMP/llm-controller"
+          "$RUNNER_TEMP/llm-controller/bin/python" -m pip install -r requirements-dev.txt
+          "$RUNNER_TEMP/llm-controller/bin/ansible-playbook" \
+            -i "$LLM_INVENTORY_FILE" playbooks/deploy.yml \
+            --extra-vars "gpu_host_allow_reboot=$ALLOW_REBOOT"

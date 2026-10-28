@@ -1,0 +1,11 @@
+{
+  "project_name": {{ ollama_project_name | to_json }},
+  "compose_file": {{ (ollama_install_dir ~ '/compose.yml') | to_json }},
+  "model": {{ ollama_model | to_json }},
+  "api_url": {{ ('http://127.0.0.1:' ~ ollama_port | string) | to_json }},
+  "failure_threshold": {{ ollama_watchdog_failures | int }},
+  "restart_cooldown": {{ ollama_watchdog_restart_cooldown | int }},
+  "restart_limit": {{ ollama_watchdog_restart_limit | int }},
+  "restart_window": {{ ollama_watchdog_restart_window | int }},
+  "startup_timeout": {{ ollama_startup_timeout | int }}
+}

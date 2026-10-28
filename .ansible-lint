@@ -1,0 +1,8 @@
+---
+profile: production
+exclude_paths:
+  - .venv/
+  - .git/
+  - terraform/.terraform/
+  - inventory/local.auto.yml
+  - inventory/local.yml

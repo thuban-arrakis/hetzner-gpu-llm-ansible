@@ -1,0 +1,28 @@
+---
+ollama_image: >-
+  ollama/ollama:0.40.12@sha256:20d1bbfbabe1c97ba4b16301f08a20d8484bcf77047742a3cb71c613d8e12d0b
+ollama_model: qwen3:4b-q4_K_M
+# SHA-256 of the approved model manifest, verified against /api/tags after pull.
+ollama_model_digest: 2bfd38a7daaf4b1037efe517ccb73d1a3bbd4822cf89f1a82be1569050a114e0
+ollama_install_dir: /opt/ollama
+ollama_data_dir: /var/lib/ollama
+ollama_project_name: gpu-llm
+ollama_service_user: ollama
+ollama_service_uid: 10001
+ollama_service_gid: 10001
+ollama_bind_address: 127.0.0.1
+ollama_port: 11434
+ollama_context_length: 4096
+ollama_parallel_requests: 1
+ollama_max_queue: 16
+ollama_keep_alive: 5m
+ollama_memory_limit: 16g
+ollama_cpu_limit: "8"
+ollama_startup_timeout: 180
+ollama_model_pull_timeout: 3600
+ollama_inference_timeout: 300
+ollama_watchdog_interval: 60
+ollama_watchdog_failures: 2
+ollama_watchdog_restart_cooldown: 300
+ollama_watchdog_restart_limit: 3
+ollama_watchdog_restart_window: 3600
