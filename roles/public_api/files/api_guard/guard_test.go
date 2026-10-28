@@ -197,7 +197,9 @@ func TestPreauthenticationBudgetsAndVerifiedCredentialCache(t *testing.T) {
 }
 
 func TestMissingCredentialsAndSpoofedForwardedAddress(t *testing.T) {
-	g, _ := newGuard(defaultConfig())
+	c := defaultConfig()
+	c.KnownPerIPBurst = 2
+	g, _ := newGuard(c)
 	r := httptest.NewRequest("GET", "/admit", nil)
 	r.Header.Set("X-Guard-Client-IP", "192.0.2.1")
 	r.Header.Set("X-Forwarded-For", "192.0.2.99")
@@ -214,6 +216,197 @@ func TestMissingCredentialsAndSpoofedForwardedAddress(t *testing.T) {
 	proxy.Header.Del("X-Guard-User")
 	if status(g, proxy) != 401 {
 		t.Fatal("unverified inference accepted")
+	}
+}
+
+func TestGrafanaAssetBurstAndIdleAuthenticationBootstrap(t *testing.T) {
+	g, _ := newGuard(defaultConfig())
+	now := time.Now()
+	g.now = func() time.Time { return now }
+	verified := authRequest("/authenticated", "192.0.2.1")
+	verified.Header.Set("X-Guard-User", "llm")
+	if status(g, verified) != 204 {
+		t.Fatal("initial credential verification failed")
+	}
+	assets := func() {
+		t.Helper()
+		for i := 0; i < 200; i++ {
+			r := authRequest("/admit", "192.0.2.1")
+			r.Header.Set("X-Guard-Path", "/grafana/public/build/chunk.js")
+			if status(g, r) != 204 {
+				t.Fatalf("ordinary Grafana startup refused at asset %d", i)
+			}
+		}
+	}
+	challenge := func() {
+		t.Helper()
+		for i := 0; i < 20; i++ {
+			r := httptest.NewRequest("GET", "/admit", nil)
+			r.Header.Set("X-Guard-Client-IP", "192.0.2.1")
+			r.Header.Set("X-Guard-Path", "/grafana/api/search")
+			if i%2 != 0 {
+				r.Header.Set("Authorization", "Basic malformed")
+			}
+			if status(g, r) != 401 {
+				t.Fatal("cheap browser authentication challenge exhausted password-attempt budget")
+			}
+		}
+	}
+	assets()
+	challenge()
+	// An idle tab can lose the short credential-cache entry and issue several
+	// unauthenticated challenges before resending browser-cached Basic auth.
+	now = now.Add(61 * time.Second)
+	challenge()
+	first := authRequest("/admit", "192.0.2.1")
+	first.Header.Set("X-Guard-Path", "/grafana/")
+	if status(g, first) != 204 || status(g, verified) != 204 {
+		t.Fatal("idle browser could not authenticate again")
+	}
+	assets()
+	if len(g.admission.ips) != 1 || len(g.admission.known) != 1 {
+		t.Fatal("route-specific admission created duplicate identity state")
+	}
+}
+
+func TestGrafanaAndAPIBudgetsRemainIndependentAndBounded(t *testing.T) {
+	c := defaultConfig()
+	c.KnownPerIPBurst, c.KnownGlobalBurst = 2, 3
+	c.GrafanaPerIPBurst, c.GrafanaGlobalBurst = 3, 5
+	g, _ := newGuard(c)
+	now := time.Now()
+	g.now = func() time.Time { return now }
+	verified := authRequest("/authenticated", "192.0.2.1")
+	verified.Header.Set("X-Guard-User", "llm")
+	status(g, verified)
+	check := func(path, ip string, want int) {
+		t.Helper()
+		r := authRequest("/admit", ip)
+		r.Header.Set("X-Guard-Path", path)
+		if got := status(g, r); got != want {
+			t.Fatalf("route admission returned %d, expected %d", got, want)
+		}
+	}
+	for i := 0; i < 3; i++ {
+		check("/grafana/", "192.0.2.1", 204)
+	}
+	check("/grafana/api/search", "192.0.2.1", 429)
+	for i := 0; i < 2; i++ {
+		check("/api/tags", "192.0.2.1", 204)
+	}
+	check("/api/tags", "192.0.2.1", 429)
+	check("/grafana", "192.0.2.2", 204)
+	check("/grafana", "192.0.2.2", 204)
+	check("/grafana", "192.0.2.3", 429)
+	check("/v1/models", "192.0.2.2", 204)
+	check("/v1/models", "192.0.2.3", 429)
+	// Browsing cannot consume, refill, or enlarge the original inference quota.
+	for i := 0; i < 2; i++ {
+		if allowed, _ := g.admission.inference(now); !allowed {
+			t.Fatal("browsing consumed inference allowance")
+		}
+	}
+	if allowed, _ := g.admission.inference(now); allowed {
+		t.Fatal("route separation enlarged inference burst")
+	}
+}
+
+func TestPlausibleUnknownPasswordsShareStrictBudgetAcrossRoutes(t *testing.T) {
+	g, _ := newGuard(defaultConfig())
+	now := time.Now()
+	g.now = func() time.Time { return now }
+	check := func(path, ip string, want int) {
+		t.Helper()
+		r := authRequest("/admit", ip)
+		r.Header.Set("X-Guard-Path", path)
+		if got := status(g, r); got != want {
+			t.Fatalf("unknown password returned %d, expected %d", got, want)
+		}
+	}
+	check("/api/tags", "192.0.2.1", 204)
+	check("/grafana/", "192.0.2.1", 204)
+	check("/grafana/", "192.0.2.1", 429)
+	check("/api/tags", "192.0.2.1", 429)
+	for i := 0; i < 20; i++ {
+		r := httptest.NewRequest("GET", "/admit", nil)
+		r.Header.Set("X-Guard-Client-IP", "192.0.2.1")
+		r.Header.Set("X-Guard-Path", "/grafana/")
+		if status(g, r) != 401 {
+			t.Fatal("missing credentials consumed bcrypt budget")
+		}
+	}
+	check("/grafana/", "192.0.2.1", 429)
+	check("/grafana/", "192.0.2.2", 204)
+	check("/api/tags", "192.0.2.2", 204)
+	check("/grafana/", "192.0.2.3", 429)
+	check("/api/tags", "192.0.2.3", 429)
+}
+
+func TestGrafanaPathClassificationDefaultsToAPIBudget(t *testing.T) {
+	for _, item := range []struct {
+		path string
+		want bool
+	}{{"/grafana", true}, {"/grafana/", true}, {"/grafana/api/search", true},
+		{"", false}, {"/api/generate", false}, {"/grafana-other", false}, {"//grafana", false},
+		{"/Grafana/", false}, {"/grafana?type=dash-db", false}} {
+		r := httptest.NewRequest("GET", "/admit", nil)
+		r.Header.Set("X-Guard-Path", item.path)
+		if grafanaRequest(r) != item.want {
+			t.Fatal("route classification unexpectedly enlarged a budget")
+		}
+	}
+}
+
+func TestAnonymousCapacityCannotExcludeAuthenticationOrResetPasswordLimits(t *testing.T) {
+	for _, capacity := range []int{4, 2048} {
+		t.Run(fmt.Sprint(capacity), func(t *testing.T) {
+			c := defaultConfig()
+			c.IPCapacity = capacity
+			c.GrafanaGlobalRPM, c.GrafanaGlobalBurst = 10000, 1000
+			g, _ := newGuard(c)
+			now := time.Now()
+			g.now = func() time.Time { return now }
+			anonymousCapacity := min(1024, capacity)
+			churn := func(start, count int) {
+				t.Helper()
+				for i := start; i < start+count; i++ {
+					now = now.Add(time.Millisecond)
+					r := httptest.NewRequest("GET", "/admit", nil)
+					r.Header.Set("X-Guard-Client-IP", fmt.Sprintf("198.18.%d.%d", i/256, i%256))
+					r.Header.Set("X-Guard-Path", "/grafana/")
+					if status(g, r) != 401 {
+						t.Fatal("anonymous capacity prevented a cheap challenge")
+					}
+					if len(g.admission.anonymous) > anonymousCapacity {
+						t.Fatal("anonymous map exceeded its fixed bound")
+					}
+				}
+			}
+			churn(0, anonymousCapacity+20)
+			if len(g.admission.anonymous) != anonymousCapacity || len(g.admission.ips) != 0 {
+				t.Fatal("anonymous challenge state leaked into password-attempt capacity")
+			}
+			if status(g, authRequest("/admit", "192.0.2.1")) != 204 {
+				t.Fatal("full anonymous map excluded a new plausible login")
+			}
+			verified := authRequest("/authenticated", "192.0.2.1")
+			verified.Header.Set("X-Guard-User", "llm")
+			if status(g, verified) != 204 {
+				t.Fatal("credential verification failed")
+			}
+			wrong := authRequest("/admit", "192.0.2.2")
+			wrong.SetBasicAuth("llm", strings.Repeat("b", 43))
+			if status(g, wrong) != 204 || status(g, wrong) != 204 || status(g, wrong) != 429 {
+				t.Fatal("plausible password attempts were not bounded")
+			}
+			churn(anonymousCapacity+20, 20)
+			if status(g, authRequest("/admit", "192.0.2.1")) != 204 || status(g, wrong) != 429 {
+				t.Fatal("anonymous eviction disrupted verified access or reset password limits")
+			}
+			if len(g.admission.ips) != 2 || len(g.admission.anonymous) != anonymousCapacity {
+				t.Fatal("separate IP maps exceeded or lost their bounded state")
+			}
+		})
 	}
 }
 

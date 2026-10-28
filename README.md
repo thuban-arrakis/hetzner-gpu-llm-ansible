@@ -22,6 +22,19 @@ is installed and GPU collection is disabled on this CPU machine. Cloud resources
 through the configured provider API and configured with Ansible. Terraform code
 is included and validated, but no Terraform plan/apply created this deployment.
 
+**Deployment provenance (2026-10-28):** the initial demo and emergency Grafana
+admission fix were deployed directly with Ansible over SSH. The remote ARM
+runner `llm-cpu-demo-20261028` is now registered and online; it has a dedicated
+account and a restricted loopback deployment key. The local Mac must not host
+a runner. Successful **Deploy** runs record their deployed commit and run URL;
+use those records to distinguish an Actions deployment from the initial manual
+rollout. Validation runs alone are not deployment evidence.
+The fixed live gateway passed a Chromium dashboard cold load and reload with
+156 HTTP responses, 24 datasource queries, no HTTP errors, and no rate-limit
+rejections. This checks dashboard loading, not every panel's metric semantics.
+The additional idle-versus-unavailable latency display in this revision has
+been tested against eight VictoriaMetrics fixtures, including missing telemetry.
+
 All controller-side demo checkouts, environments, inventories, keys, client
 configuration, and caches belong under **`/tmp`**, outside the home directory.
 On macOS `/tmp` resolves to `/private/tmp`; protected-file checks use that
@@ -266,18 +279,29 @@ application routes and preserves Grafana's cookies.
 
 The public gateway checks cheap admission rules **before bcrypt authentication**.
 Source addresses come from the TCP peer; caller-supplied forwarding and guard
-headers cannot choose an identity or bypass a bucket. Missing, malformed, and
-previously unverified credentials share a low admission budget. After Caddy
-validates a credential, the guard caches only its SHA-256 digest for 60 seconds
-to permit normal Grafana asset loading. Caddy still authenticates every request.
-No plaintext credential is cached by the guard or written to disk.
+headers cannot choose an identity or bypass a bucket. Grafana browsing has its
+own per-IP and global budgets, separate from API traffic and generation limits.
+Caddy supplies the original request path to the guard; clients cannot select the
+larger browsing allowance with a header.
+
+Missing or malformed credentials receive a cheap **401** challenge, subject to
+the applicable route budgets. They do not consume the small password-attempt
+allowance, so browser authentication challenges do not prevent a subsequent
+login. Plausibly formatted, previously unverified credentials share the strict
+password-attempt budget across both Grafana and API routes before reaching
+bcrypt. After Caddy validates a credential, the guard caches only its SHA-256
+digest for 60 seconds to permit normal dashboard asset loading. Caddy still
+authenticates every request. No plaintext credential is cached by the guard or
+written to disk.
 
 | Control | Default / live CPU demo |
 |---|---|
-| Unknown credentials, per IP | 5/min sustained, burst 2 |
-| Unknown credentials, globally | 30/min sustained, burst 4 |
-| General requests, per IP | 300/min sustained, burst 80 |
-| General requests, globally | 600/min sustained, burst 120 |
+| Plausible unverified credentials, per IP; shared across routes | 5/min sustained, burst 2 |
+| Plausible unverified credentials, globally; shared across routes | 30/min sustained, burst 4 |
+| API and other non-Grafana requests, per IP | 300/min sustained, burst 80 |
+| API and other non-Grafana requests, globally | 600/min sustained, burst 120 |
+| Grafana browsing, per IP | 1,800/min sustained, burst 300 |
+| Grafana browsing, globally | 3,600/min sustained, burst 600 |
 | Authenticated generation, per account and globally | 6/min sustained, burst 2 |
 | Active public generation | 1; busy requests are rejected without queuing |
 | Inference request body | 32 KiB |
@@ -288,6 +312,13 @@ No plaintext credential is cached by the guard or written to disk.
 
 Rates use token buckets, so a short burst is allowed; these are not rolling-window
 request counts. Throttled or busy requests return **429** with `Retry-After`.
+IP state for plausible credentials is capped at 4,096 entries. Anonymous and
+malformed requests use a separate map capped at 1,024 entries, evicting its oldest
+entry when full. This eviction cannot reset password-attempt limits or displace
+authenticated clients; route-global limits still apply. If configured with a
+smaller IP capacity, the anonymous map also uses that smaller bound. Anonymous
+and plausible-credential traffic have separate per-IP state within each route
+budget, with shared route-global ceilings.
 Invalid payloads return **400**, bodies exceeding the byte limit return **413**,
 and unsupported content types or compression return **415**.
 The text-byte limit is not a tokenizer-based prompt-token count. The fixed context
@@ -499,26 +530,127 @@ current resources do not intentionally store passwords in state.
   and checksum-pinned Gitleaks scans. It has read-only
   repository permissions and no infrastructure credentials. No plan/apply.
 - **Deploy:** manual `workflow_dispatch` on `main` only, never a PR trigger. It
-  requires a separate trusted management runner labelled `llm-deploy` and the
+  targets the requested remote ARM runner with the labels
+  `self-hosted`, `linux`, `ARM64`, and `llm-deploy`, and the
   `gpu-production` environment. Configure environment approval where available,
   branch protection, and restrict workflow dispatch to trusted maintainers.
-  Do not install this runner on the inference server or allow untrusted PR jobs
-  on it. Put a runner-owned, non-executable mode-0600 static YAML inventory
-  outside the checkout, set environment variable configuration
-  `LLM_INVENTORY_FILE` as a GitHub environment **variable**, and provide its SSH
-  agent/known_hosts out of band. No SSH private key is interpolated into workflow
-  scripts. The runner needs Python 3.12+, OpenSSH, and an up-to-date GitHub
+  For this explicitly requested demo, the repository-scoped runner shares the
+  existing Hetzner CPU inference server. It runs as the non-root `llm-runner`
+  account with no sudo grant. Deployment uses a dedicated root SSH key restricted
+  to `127.0.0.1`, with a pinned host key and no PTY or forwarding. This still
+  grants trusted workflow code root command execution on this host.
+  PR validation stays on GitHub-hosted runners; never
+  send untrusted PR jobs to the deployment runner. No runner runs on the local
+  Mac as part of this configuration.
+  Put the runner-owned, non-executable mode-0600 static YAML inventory at
+  `/tmp/llm-actions-runner/protected/inventory.yml`, outside the checkout, and
+  set that path as the GitHub environment **variable** `LLM_INVENTORY_FILE`.
+  The inventory uses loopback SSH and references the protected deployment key
+  and pinned `known_hosts`; private-key contents are never interpolated into
+  workflow scripts. The runner needs Python 3.12+ and an up-to-date GitHub
   Actions runner (2.329.0+ for the pinned Node.js 24 actions).
+  Checkout does not update Git's global safe-directory configuration. Pip
+  caching is disabled, and controller caches and temporary files stay under
+  `RUNNER_TEMP`. After Ansible succeeds, the job records only the deployed
+  commit SHA and workflow-run URL in its output and run summary.
 
 The manual workflow performs Ansible deployment when deliberately invoked; it
 does not provision or purchase servers. Private-repository Actions minutes may
 be billable according to the account's GitHub plan.
+
+The remote runner must be bootstrapped and registered before dispatch. Its home,
+installation, working directories, registration credentials and protected
+inventory belong under `/tmp/llm-actions-runner` on the server. A systemd unit
+in the standard service directory manages the long-running runner process;
+clearing `/tmp` removes its operational state and requires reprovisioning and
+registration as needed. The runner is not installed on the local Mac.
+
+The existing demo was initially deployed manually with Ansible. Checking in the
+workflow or registering its runner does not itself redeploy the server; a
+successful Actions run provides the revision evidence described above.
+
+### Bootstrap the remote deployment runner
+
+Run bootstrap from the existing protected controller environment and inventory.
+It prepares the account, pinned runner release, restricted loopback SSH key and
+disabled systemd service; it does not register or start the runner. Only the
+existing bcrypt hash is copied, never the public API's plaintext password.
+
+```bash
+ansible-playbook -i "$DEMO_DIR/inventory.yml" playbooks/bootstrap-runner.yml \
+  --extra-vars "actions_runner_bcrypt_source_file=$DEMO_DIR/client/password.bcrypt"
+mkdir -m 700 "$DEMO_DIR/runner-registration"
+python scripts/create_runner_registration_token.py \
+  --repository thuban-arrakis/hetzner-gpu-llm-ansible \
+  --output "$DEMO_DIR/runner-registration/registration-token.json"
+```
+
+The token helper uses the controller's existing authenticated GitHub CLI and
+writes a new mode-0600 file inside the mode-0700 directory without displaying
+the token. Never paste a registration token into a command or chat.
+
+Create a protected copy of the existing inventory as
+`$DEMO_DIR/runner-inventory.yml`. Preserve the CPU/model/resource/monitoring/public
+API settings and existing external administrator CIDRs. Add `127.0.0.1/32` to
+`server_security_admin_cidrs` so the SSH-source preflight accepts the runner's
+loopback connection. Change only the connection and hash-file references on its
+existing host to:
+
+```yaml
+ansible_host: 127.0.0.1
+ansible_user: root
+ansible_connection: ssh
+ansible_ssh_use_tty: false
+ansible_ssh_private_key_file: /tmp/llm-actions-runner/protected/deploy_ed25519
+ansible_ssh_common_args: >-
+  -o StrictHostKeyChecking=yes
+  -o UserKnownHostsFile=/tmp/llm-actions-runner/protected/known_hosts
+  -o IdentitiesOnly=yes -o RequestTTY=no
+public_api_password_hash_file: /tmp/llm-actions-runner/protected/password.bcrypt
+```
+
+Keep that inventory mode 0600. Using your existing verified SSH configuration,
+replace the documentation address below, transfer the two protected files and
+set their remote ownership before registration:
+
+```bash
+RUNNER_HOST=root@192.0.2.10
+scp -p -o StrictHostKeyChecking=yes \
+  "$DEMO_DIR/runner-registration/registration-token.json" \
+  "$RUNNER_HOST:/tmp/llm-actions-runner/protected/registration-token.json"
+scp -p -o StrictHostKeyChecking=yes "$DEMO_DIR/runner-inventory.yml" \
+  "$RUNNER_HOST:/tmp/llm-actions-runner/protected/inventory.yml"
+ssh -T -o StrictHostKeyChecking=yes "$RUNNER_HOST" \
+  'chown llm-runner:llm-runner /tmp/llm-actions-runner/protected/{registration-token.json,inventory.yml} && chmod 600 /tmp/llm-actions-runner/protected/{registration-token.json,inventory.yml}'
+ssh -T -o StrictHostKeyChecking=yes "$RUNNER_HOST" \
+  'runuser -u llm-runner -- python3 /tmp/llm-actions-runner/configure_actions_runner.py --repository thuban-arrakis/hetzner-gpu-llm-ansible --name llm-cpu-demo-20261028'
+```
+
+The registration helper passes the token only through the runner subprocess's
+environment, suppresses subprocess output, and removes the remote token file on
+success. Remove the controller's temporary token file after successful
+registration. The runner's persistent registration credentials stay protected
+under its own directory.
+
+The `gpu-production` environment variable `LLM_INVENTORY_FILE` is configured as
+`/tmp/llm-actions-runner/protected/inventory.yml`. After registration and inventory
+checks succeed, start the remote service, then manually dispatch **Deploy to an
+existing LLM server** on `main` in GitHub Actions:
+
+```bash
+ssh -T -o StrictHostKeyChecking=yes "$RUNNER_HOST" \
+  'systemctl enable --now llm-actions-runner.service'
+```
+
+These instructions do not imply that registration or an Actions deployment has
+already completed; check the job result and its recorded commit SHA/run URL.
 
 ## Local validation
 
 ```bash
 . "$DEMO_DIR/venv/bin/activate"
 ansible-playbook -i inventory/example.yml playbooks/deploy.yml --syntax-check
+ansible-playbook -i inventory/example.yml playbooks/bootstrap-runner.yml --syntax-check
 ansible-lint
 TMPDIR="$DEMO_DIR" python -m pytest -q --basetemp="$DEMO_DIR/pytest"
 GOCACHE="$DEMO_DIR/go-cache" GOPATH="$DEMO_DIR/go" GOTOOLCHAIN=local \
@@ -540,7 +672,11 @@ idempotence run on a representative host.
 The gateway tests need Caddy 2.11.7 available as `caddy` or via the
 `CADDY_BINARY` environment variable. CI downloads and verifies that binary.
 They exercise no-SNI IP TLS with an ephemeral, locally trusted test certificate,
-authentication and denial of administrative routes; they do not request a live
+authentication and denial of administrative routes. A real Caddy-plus-Go test
+also covers 200 authenticated dashboard asset requests, query preservation,
+anonymous challenges, invalid-password throttling, forged header rejection,
+payload limits and inference concurrency. These local protocol checks do not
+constitute full browser verification; they do not request a live
 Let's Encrypt certificate or contact any public model endpoint.
 Monitoring tests cover Compose isolation, GPU textfile failure handling,
 protected Grafana key files, and LLM probe timeouts/overlap/metrics behavior.

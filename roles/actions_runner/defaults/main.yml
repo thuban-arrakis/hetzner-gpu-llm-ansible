@@ -1,0 +1,6 @@
+---
+# Controller-side path only, outside the checkout and inside an owner-only
+# directory. The protected_bcrypt lookup validates the source before reading it.
+actions_runner_bcrypt_source_file: ""
+actions_runner_version: 2.338.2
+actions_runner_checksum: sha256:670adb2f268fe21dcbb58b3db0e0aa9d5b3bddfe2c651481336e561ff86de945

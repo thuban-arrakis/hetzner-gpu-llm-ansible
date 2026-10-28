@@ -1,5 +1,5 @@
 ---
-name: Deploy to an existing GPU server
+name: Deploy to an existing LLM server
 on:
   workflow_dispatch:
     inputs:
@@ -18,20 +18,28 @@ concurrency:
 
 jobs:
   deploy:
-    # Provision this dedicated management runner separately; never run PR jobs on it.
-    if: github.ref == 'refs/heads/main'
-    runs-on: [self-hosted, linux, x64, llm-deploy]
+    # Demo: dedicated runner account on the remote ARM host; never run PR jobs on it.
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    runs-on: [self-hosted, linux, ARM64, llm-deploy]
     environment: gpu-production
     timeout-minutes: 90
+    env:
+      PIP_CACHE_DIR: ${{ runner.temp }}/llm-pip-cache
+      PIP_NO_CACHE_DIR: '1'
+      PIP_DISABLE_PIP_VERSION_CHECK: '1'
+      PYTHONPYCACHEPREFIX: ${{ runner.temp }}/llm-pycache
+      XDG_CACHE_HOME: ${{ runner.temp }}/llm-cache
+      TMPDIR: ${{ runner.temp }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
+          set-safe-directory: false
       - name: Check protected controller configuration
         env:
           LLM_INVENTORY_FILE: ${{ vars.LLM_INVENTORY_FILE }}
         run: python3 scripts/check_deploy_inventory.py
-      - name: Deploy with the controller's SSH agent and pinned known_hosts
+      - name: Deploy with the protected controller inventory
         env:
           LLM_INVENTORY_FILE: ${{ vars.LLM_INVENTORY_FILE }}
           ALLOW_REBOOT: ${{ inputs.allow_reboot }}
@@ -41,7 +49,15 @@ jobs:
           export XDG_CACHE_HOME="$RUNNER_TEMP/llm-cache"
           export TMPDIR="$RUNNER_TEMP"
           python3 -m venv "$RUNNER_TEMP/llm-controller"
-          "$RUNNER_TEMP/llm-controller/bin/python" -m pip install -r requirements-dev.txt
+          "$RUNNER_TEMP/llm-controller/bin/python" -m pip install --no-cache-dir -r requirements-dev.txt
           "$RUNNER_TEMP/llm-controller/bin/ansible-playbook" \
             -i "$LLM_INVENTORY_FILE" playbooks/deploy.yml \
             --extra-vars "gpu_host_allow_reboot=$ALLOW_REBOOT"
+      - name: Record successful deployment revision
+        if: success()
+        env:
+          DEPLOYED_SHA: ${{ github.sha }}
+          DEPLOY_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          printf 'Deployed commit: %s\nWorkflow run: %s\n' \
+            "$DEPLOYED_SHA" "$DEPLOY_RUN_URL" | tee -a "$GITHUB_STEP_SUMMARY"

@@ -100,7 +100,7 @@ func (g *Guard) admit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	hash, shape := credentialHash(r, g.cfg.Username)
-	if allowed, retry := g.admission.admit(ip, hash, shape, g.now()); !allowed {
+	if allowed, retry := g.admission.admit(ip, hash, shape, grafanaRequest(r), g.now()); !allowed {
 		g.stats.preauthRejected.Add(1)
 		reject(w, 429, "admission_limit", retry)
 		return

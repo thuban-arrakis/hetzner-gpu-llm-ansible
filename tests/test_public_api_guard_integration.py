@@ -126,6 +126,7 @@ def test_real_gateway_guard_authentication_limits_and_normalized_proxy(tmp_path)
     threading.Thread(target=application.serve_forever, daemon=True).start()
     guard_port, gateway_port, metrics_port = free_port(), free_port(), free_port()
     password = secrets.token_urlsafe(32)
+    wrong_password = secrets.token_urlsafe(32)
     password_hash = bcrypt.hashpw(password.encode(), bcrypt.gensalt(rounds=4)).decode()
     values = yaml.safe_load((ROOT / "roles/public_api/defaults/main.yml").read_text())
     values.update(
@@ -158,15 +159,18 @@ def test_real_gateway_guard_authentication_limits_and_normalized_proxy(tmp_path)
     caddy_file.write_text(config)
     context = ssl.create_default_context(cafile=str(cert_file))
 
-    def request(path, body=None, authenticated=True, forged_ip=None):
+    def request(path, body=None, authenticated=True, forged_ip=None, wrong_auth=False, forged_path=None):
         connection = http.client.HTTPSConnection("127.0.0.1", gateway_port, context=context, timeout=7)
         headers = {"Content-Type": "application/json"}
         if authenticated:
-            headers["Authorization"] = "Basic " + base64.b64encode(f"llm:{password}".encode()).decode()
+            selected_password = wrong_password if wrong_auth else password
+            headers["Authorization"] = "Basic " + base64.b64encode(f"llm:{selected_password}".encode()).decode()
             headers["Cookie"] = "inert=must-not-reach-inference"
         if forged_ip:
             headers.update({"X-Guard-Client-IP": forged_ip, "X-Forwarded-For": forged_ip,
                             "X-Guard-User": "untrusted-client"})
+        if forged_path:
+            headers["X-Guard-Path"] = forged_path
         try:
             connection.request("POST" if body is not None else "GET", path, body=body, headers=headers)
             response = connection.getresponse()
@@ -202,15 +206,20 @@ def test_real_gateway_guard_authentication_limits_and_normalized_proxy(tmp_path)
         assert request("/api/tags")[0] == 200
         assert request("/grafana/api/search?type=dash-db")[0] == 200
         assert application_get_paths[-1] == "/grafana/api/search?type=dash-db"
-        for _ in range(6):
+        for _ in range(200):
             assert request("/grafana/public/build/runtime.js")[0] == 200
-        for _ in range(3):
+        for _ in range(20):
             assert request("/api/tags", authenticated=False)[0] == 401
-        status, retry = request("/api/tags", authenticated=False, forged_ip="198.51.100.9")
+        # Anonymous browser challenges are cheap. Only plausible credentials
+        # that require bcrypt consume the small unknown-password budget.
+        for _ in range(3):
+            assert request("/api/tags", wrong_auth=True)[0] == 401
+        status, retry = request("/api/tags", wrong_auth=True, forged_ip="198.51.100.9")
         assert status == 429 and retry is not None
         # The global unknown budget remains available; a forged per-IP identity
-        # would therefore incorrectly turn this into401 instead of429.
-        assert request("/api/tags", authenticated=False, forged_ip="198.51.100.10")[0] == 429
+        # would therefore incorrectly turn this into 401 instead of 429.
+        assert request("/api/tags", wrong_auth=True, forged_ip="198.51.100.10")[0] == 429
+        assert request("/grafana/", authenticated=False)[0] == 401
 
         native = json.dumps({"model": values["ollama_model"], "prompt": "Say ok", "stream": False,
                              "options": {"num_ctx": 512}})
@@ -244,6 +253,17 @@ def test_real_gateway_guard_authentication_limits_and_normalized_proxy(tmp_path)
         block_next.clear()
         assert request("/api/generate", native)[0] == 200  # Slot released after completion.
         assert all(not leaked for _, _, leaked in received)
+
+        # Supplying a forged browsing path cannot move API requests into the
+        # larger dashboard allowance; the real Caddy hook must overwrite it.
+        for _ in range(values["public_api_known_per_ip_burst"] + 1):
+            result, _ = request("/api/tags", forged_path="/grafana/")
+            if result == 429:
+                break
+            assert result == 200
+        else:
+            raise AssertionError("Forged browsing path bypassed the API admission budget")
+        assert request("/grafana/")[0] == 200
 
         stop_process(guard)
         assert request("/api/tags")[0] == 502

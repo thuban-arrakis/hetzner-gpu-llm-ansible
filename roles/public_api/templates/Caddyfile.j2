@@ -35,11 +35,13 @@ https://{{ public_api_address }} {
         Cache-Control no-store
     }
     route {
+        vars guard_original_path {http.request.uri.path}
         # Cheap bounded admission runs before bcrypt. The guard learns only
         # credential digests after Caddy has authenticated the original request.
         forward_auth 127.0.0.1:{{ public_api_guard_port }} {
             uri /admit?
             header_up X-Guard-Client-IP {http.request.remote.host}
+            header_up X-Guard-Path {http.vars.guard_original_path}
             header_up -X-Guard-User
             header_up -Cookie
             transport http {
@@ -53,6 +55,7 @@ https://{{ public_api_address }} {
         forward_auth 127.0.0.1:{{ public_api_guard_port }} {
             uri /authenticated?
             header_up X-Guard-Client-IP {http.request.remote.host}
+            header_up X-Guard-Path {http.vars.guard_original_path}
             header_up X-Guard-User {{ public_api_username }}
             header_up -Cookie
             transport http {
@@ -73,6 +76,7 @@ https://{{ public_api_address }} {
                 header_up -Authorization
                 header_up -X-Guard-User
                 header_up -X-Guard-Client-IP
+                header_up -X-Guard-Path
                 transport http {
                     dial_timeout 5s
                     response_header_timeout 60s
@@ -94,6 +98,7 @@ https://{{ public_api_address }} {
                 header_up -Cookie
                 header_up -X-Guard-User
                 header_up -X-Guard-Client-IP
+                header_up -X-Guard-Path
                 transport http {
                     dial_timeout 5s
                     response_header_timeout 15s
@@ -106,6 +111,7 @@ https://{{ public_api_address }} {
                 header_up -Cookie
                 header_up X-Guard-User {{ public_api_username }}
                 header_up X-Guard-Client-IP {http.request.remote.host}
+                header_up -X-Guard-Path
                 transport http {
                     dial_timeout 5s
                     response_header_timeout {{ public_api_response_timeout }}s

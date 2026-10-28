@@ -29,6 +29,10 @@ type Config struct {
 	KnownPerIPBurst       int     `json:"known_per_ip_burst"`
 	KnownGlobalRPM        float64 `json:"known_global_rpm"`
 	KnownGlobalBurst      int     `json:"known_global_burst"`
+	GrafanaPerIPRPM       float64 `json:"grafana_per_ip_rpm"`
+	GrafanaPerIPBurst     int     `json:"grafana_per_ip_burst"`
+	GrafanaGlobalRPM      float64 `json:"grafana_global_rpm"`
+	GrafanaGlobalBurst    int     `json:"grafana_global_burst"`
 	UnknownPerIPRPM       float64 `json:"unknown_per_ip_rpm"`
 	UnknownPerIPBurst     int     `json:"unknown_per_ip_burst"`
 	UnknownGlobalRPM      float64 `json:"unknown_global_rpm"`
@@ -43,6 +47,7 @@ func defaultConfig() Config {
 		Model: "qwen3:4b-q4_K_M", ContextTokens: 2048, OutputTokens: 256, BodyBytes: 32768, InputBytes: 8192, MaxMessages: 32,
 		InferenceRPM: 6, InferenceBurst: 2, InferenceConcurrency: 1, RequestTimeoutSeconds: 120,
 		KnownPerIPRPM: 300, KnownPerIPBurst: 80, KnownGlobalRPM: 600, KnownGlobalBurst: 120,
+		GrafanaPerIPRPM: 1800, GrafanaPerIPBurst: 300, GrafanaGlobalRPM: 3600, GrafanaGlobalBurst: 600,
 		UnknownPerIPRPM: 5, UnknownPerIPBurst: 2, UnknownGlobalRPM: 30, UnknownGlobalBurst: 4,
 		IPCapacity: 4096, IPTTLSeconds: 600, CredentialTTLSeconds: 60}
 }
@@ -68,12 +73,12 @@ func (c Config) validate() error {
 	if c.ContextTokens < 512 || c.ContextTokens > 32768 || c.OutputTokens < 1 || c.OutputTokens > 256 || c.BodyBytes < 1024 || c.BodyBytes > 32768 || c.InputBytes < 1 || c.InputBytes > 8192 || c.MaxMessages < 1 || c.MaxMessages > 32 || c.InferenceConcurrency != 1 || c.RequestTimeoutSeconds < 1 || c.RequestTimeoutSeconds > 120 {
 		return errors.New("invalid request limits")
 	}
-	for _, v := range []float64{c.InferenceRPM, c.KnownPerIPRPM, c.KnownGlobalRPM, c.UnknownPerIPRPM, c.UnknownGlobalRPM} {
+	for _, v := range []float64{c.InferenceRPM, c.KnownPerIPRPM, c.KnownGlobalRPM, c.GrafanaPerIPRPM, c.GrafanaGlobalRPM, c.UnknownPerIPRPM, c.UnknownGlobalRPM} {
 		if !(v > 0 && v <= 10000) {
 			return errors.New("invalid rate")
 		}
 	}
-	for _, v := range []int{c.InferenceBurst, c.KnownPerIPBurst, c.KnownGlobalBurst, c.UnknownPerIPBurst, c.UnknownGlobalBurst} {
+	for _, v := range []int{c.InferenceBurst, c.KnownPerIPBurst, c.KnownGlobalBurst, c.GrafanaPerIPBurst, c.GrafanaGlobalBurst, c.UnknownPerIPBurst, c.UnknownGlobalBurst} {
 		if v < 1 || v > 1000 {
 			return errors.New("invalid burst")
 		}

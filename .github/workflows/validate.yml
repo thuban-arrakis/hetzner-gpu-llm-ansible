@@ -47,6 +47,7 @@ jobs:
           CADDY_BINARY: ${{ runner.temp }}/caddy
         run: |
           ansible-playbook -i inventory/example.yml playbooks/deploy.yml --syntax-check
+          ansible-playbook -i inventory/example.yml playbooks/bootstrap-runner.yml --syntax-check
           ansible-lint
           docker compose version
           python -m pytest -q

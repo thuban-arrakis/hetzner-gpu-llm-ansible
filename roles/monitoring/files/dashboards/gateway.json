@@ -8,7 +8,7 @@
   ],
   "timezone": "browser",
   "schemaVersion": 39,
-  "version": 3,
+  "version": 4,
   "refresh": "30s",
   "editable": false,
   "graphTooltip": 1,
@@ -293,7 +293,7 @@
         "w": 6,
         "h": 4
       },
-      "description": "Mean server handling duration for completed requests through the public top-level route. Includes authentication, API/Grafana upstream work and response streaming. Not client end-to-end latency or LLM-only response time; no completed traffic means N/A.",
+      "description": "Mean server handling duration for completed requests through the public top-level route, including authentication, API/Grafana upstream work and response streaming. Idle means the Caddy scrape is healthy and the completed-request rate is zero over the last five minutes; no latency is invented. Unavailable means the scrape is down/missing or the duration telemetry is insufficient. This is not client end-to-end latency or LLM-only response time.",
       "datasource": {
         "type": "prometheus",
         "uid": "victoriametrics"
@@ -301,7 +301,7 @@
       "fieldConfig": {
         "defaults": {
           "unit": "s",
-          "noValue": "N/A",
+          "noValue": "Unavailable",
           "color": {
             "mode": "thresholds"
           },
@@ -313,7 +313,18 @@
                 "value": null
               }
             ]
-          }
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "-1": {
+                  "text": "Idle \u00b7 no completions",
+                  "color": "blue"
+                }
+              }
+            }
+          ]
         },
         "overrides": []
       },
@@ -323,7 +334,7 @@
             "type": "prometheus",
             "uid": "victoriametrics"
           },
-          "expr": "sum(rate(caddy_http_request_duration_seconds_sum{job=\"caddy\",server=\"public_gateway\",handler=\"subroute\"}[5m])) / sum(rate(caddy_http_request_duration_seconds_count{job=\"caddy\",server=\"public_gateway\",handler=\"subroute\"}[5m]))",
+          "expr": "(((sum(rate(caddy_http_request_duration_seconds_sum{job=\"caddy\",server=\"public_gateway\",handler=\"subroute\"}[5m])) / sum(rate(caddy_http_request_duration_seconds_count{job=\"caddy\",server=\"public_gateway\",handler=\"subroute\"}[5m]))) and on() (sum(rate(caddy_http_request_duration_seconds_count{job=\"caddy\",server=\"public_gateway\",handler=\"subroute\"}[5m])) > 0)) or on() ((sum(rate(caddy_http_request_duration_seconds_count{job=\"caddy\",server=\"public_gateway\",handler=\"subroute\"}[5m])) == 0) - 1)) and on() (max(up{job=\"caddy\"}) == 1) and on() (sum(rate(caddy_http_request_duration_seconds_sum{job=\"caddy\",server=\"public_gateway\",handler=\"subroute\"}[5m])) >= 0)",
           "legendFormat": "",
           "refId": "A",
           "range": false,
@@ -795,7 +806,7 @@
         "w": 12,
         "h": 8
       },
-      "description": "Fraction of completed public gateway requests returning 5xx across API and Grafana traffic. Includes authentication/admission service and upstream failures; not an LLM-only error rate. No completed traffic means N/A.",
+      "description": "Fraction of completed public gateway requests returning 5xx across API and Grafana traffic. Includes authentication/admission service and upstream failures; not an LLM-only error rate. With no completed requests the fraction is undefined, so the chart has a gap rather than an invented zero. Missing telemetry also leaves a gap; consult the exporter and mean-duration status stats.",
       "datasource": {
         "type": "prometheus",
         "uid": "victoriametrics"
@@ -872,7 +883,7 @@
         "w": 12,
         "h": 8
       },
-      "description": "Mean server handling duration for completed requests through the public top-level route. Includes authentication, API/Grafana upstream work and response streaming. Not client end-to-end latency or LLM-only response time; no completed traffic means N/A.",
+      "description": "Mean server handling duration for completed public-route requests, including authentication, upstream work and streaming. No completed requests means the mean is undefined and the chart has a gap. Missing telemetry also leaves a gap; the current mean-duration stat distinguishes Idle from Unavailable. This is not client end-to-end latency or LLM-only response time.",
       "datasource": {
         "type": "prometheus",
         "uid": "victoriametrics"
@@ -1028,7 +1039,7 @@
         "w": 12,
         "h": 8
       },
-      "description": "Fraction of completed public gateway requests returning 4xx, including authentication failures, guard rejections and API/Grafana responses. Connections rejected before entering the top-level route are excluded.",
+      "description": "Fraction of completed public gateway requests returning 4xx, including authentication failures, guard rejections and API/Grafana responses. Connections rejected before entering the top-level route are excluded. With no completed requests the fraction is undefined, so the chart has a gap rather than an invented zero. Missing telemetry also leaves a gap; consult the exporter and mean-duration status stats.",
       "datasource": {
         "type": "prometheus",
         "uid": "victoriametrics"

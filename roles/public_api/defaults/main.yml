@@ -23,6 +23,10 @@ public_api_known_per_ip_rpm: 300
 public_api_known_per_ip_burst: 80
 public_api_known_global_rpm: 600
 public_api_known_global_burst: 120
+public_api_grafana_per_ip_rpm: 1800
+public_api_grafana_per_ip_burst: 300
+public_api_grafana_global_rpm: 3600
+public_api_grafana_global_burst: 600
 public_api_unknown_per_ip_rpm: 5
 public_api_unknown_per_ip_burst: 2
 public_api_unknown_global_rpm: 30

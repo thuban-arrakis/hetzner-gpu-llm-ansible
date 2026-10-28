@@ -1,0 +1,244 @@
+---
+- name: Validate the approved runner release and protected source reference
+  ansible.builtin.assert:
+    that:
+      - actions_runner_version == '2.338.2'
+      - actions_runner_checksum == 'sha256:670adb2f268fe21dcbb58b3db0e0aa9d5b3bddfe2c651481336e561ff86de945'
+      - actions_runner_bcrypt_source_file is match('^/')
+    fail_msg: Use the reviewed ARM64 runner release and a protected controller-side bcrypt file reference.
+
+- name: Validate the protected bcrypt source before host changes
+  ansible.builtin.assert:
+    that:
+      - lookup('protected_bcrypt', actions_runner_bcrypt_source_file) | length == 60
+  no_log: true
+
+- name: Inspect an existing runner service unit without following links
+  ansible.builtin.stat:
+    path: /etc/systemd/system/llm-actions-runner.service
+    follow: false
+  register: actions_runner_existing_unit
+
+- name: Reject an unsafe existing runner service unit
+  ansible.builtin.assert:
+    that:
+      - >-
+        not actions_runner_existing_unit.stat.exists or
+        (actions_runner_existing_unit.stat.isreg and
+         not actions_runner_existing_unit.stat.islnk and
+         actions_runner_existing_unit.stat.uid == 0)
+    fail_msg: The existing runner unit must be a root-owned regular file.
+
+- name: Keep an existing runner stopped and disabled during bootstrap
+  ansible.builtin.systemd_service:
+    name: llm-actions-runner.service
+    state: stopped
+    enabled: false
+  when:
+    - actions_runner_existing_unit.stat.exists
+    - not ansible_check_mode
+
+- name: Install Git, Python and Ubuntu 24.04 runner runtime dependencies
+  ansible.builtin.apt:
+    name:
+      - ca-certificates
+      - curl
+      - git
+      - gzip
+      - libgcc-s1
+      - libicu74
+      - libkrb5-3
+      - liblttng-ust1t64
+      - libssl3t64
+      - libstdc++6
+      - openssh-client
+      - python3-venv
+      - tar
+      - zlib1g
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+    lock_timeout: 120
+
+- name: Create the dedicated runner group
+  ansible.builtin.group:
+    name: llm-runner
+    system: true
+
+- name: Create the runner account without supplementary privileges
+  ansible.builtin.user:
+    name: llm-runner
+    group: llm-runner
+    groups: []
+    append: false
+    system: true
+    create_home: false
+    home: /tmp/llm-actions-runner/home
+    shell: /usr/sbin/nologin
+    password_lock: true
+  register: actions_runner_account
+
+- name: Inspect the runner base before creating directories
+  ansible.builtin.stat:
+    path: /tmp/llm-actions-runner
+    follow: false
+  register: actions_runner_base
+
+- name: Reject a preexisting unsafe temporary runner base
+  ansible.builtin.assert:
+    that:
+      - >-
+        not actions_runner_base.stat.exists or
+        (actions_runner_base.stat.isdir and not actions_runner_base.stat.islnk
+         and actions_runner_base.stat.uid == 0
+         and actions_runner_base.stat.mode in ['0700', '0750', '0755'])
+    fail_msg: The runner base must be a root-owned directory without writable group or other access.
+
+- name: Create the root-managed runner base
+  ansible.builtin.file:
+    path: /tmp/llm-actions-runner
+    state: directory
+    owner: root
+    group: llm-runner
+    mode: "0750"
+
+- name: Inspect private runner directories without following links
+  ansible.builtin.stat:
+    path: "/tmp/llm-actions-runner/{{ item }}"
+    follow: false
+  loop: [runner, home, work, protected, tmp, cache]
+  register: actions_runner_directory_checks
+
+- name: Reject unsafe preexisting private runner directories
+  ansible.builtin.assert:
+    that:
+      - >-
+        not item.stat.exists or
+        (item.stat.isdir and not item.stat.islnk
+         and item.stat.uid == actions_runner_account.uid
+         and item.stat.mode == '0700')
+    fail_msg: Existing runner directories must belong to the dedicated account with mode 0700 and no symlinks.
+  loop: "{{ actions_runner_directory_checks.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when: not ansible_check_mode
+
+- name: Create private runner storage and working directories
+  ansible.builtin.file:
+    path: "/tmp/llm-actions-runner/{{ item }}"
+    state: directory
+    owner: llm-runner
+    group: llm-runner
+    mode: "0700"
+  loop: [runner, home, work, protected, tmp, cache]
+
+- name: Download the checksum-pinned official Linux ARM64 runner
+  ansible.builtin.get_url:
+    url: >-
+      {{ 'https://github.com/actions/runner/releases/download/v' ~ actions_runner_version ~
+         '/actions-runner-linux-arm64-' ~ actions_runner_version ~ '.tar.gz' }}
+    dest: "/tmp/llm-actions-runner/actions-runner-{{ actions_runner_version }}.tar.gz"
+    checksum: "{{ actions_runner_checksum }}"
+    owner: root
+    group: root
+    mode: "0600"
+    timeout: 60
+
+- name: Extract the reviewed runner release once
+  ansible.builtin.unarchive:
+    src: "/tmp/llm-actions-runner/actions-runner-{{ actions_runner_version }}.tar.gz"
+    dest: /tmp/llm-actions-runner/runner
+    remote_src: true
+    owner: llm-runner
+    group: llm-runner
+    creates: "/tmp/llm-actions-runner/runner/.bootstrap-{{ actions_runner_version }}"
+  when: not ansible_check_mode
+
+- name: Restore owner-only access to the extracted runner root
+  ansible.builtin.file:
+    path: /tmp/llm-actions-runner/runner
+    state: directory
+    owner: llm-runner
+    group: llm-runner
+    mode: "0700"
+
+- name: Mark the extracted runner release
+  ansible.builtin.copy:
+    content: "{{ actions_runner_version }}\n"
+    dest: "/tmp/llm-actions-runner/runner/.bootstrap-{{ actions_runner_version }}"
+    owner: llm-runner
+    group: llm-runner
+    mode: "0600"
+  when: not ansible_check_mode
+
+# GitHub's svc.sh normally copies bin/runsvc.sh here. Bootstrap does this
+# directly so the convenience installer cannot register or enable a service.
+- name: Install the upstream service entrypoint without running its installer
+  ansible.builtin.copy:
+    src: /tmp/llm-actions-runner/runner/bin/runsvc.sh
+    dest: /tmp/llm-actions-runner/runner/runsvc.sh
+    remote_src: true
+    owner: llm-runner
+    group: llm-runner
+    mode: "0700"
+  when: not ansible_check_mode
+
+- name: Install the protected SSH bootstrap helper
+  ansible.builtin.copy:
+    src: bootstrap_ssh.py
+    dest: /tmp/llm-actions-runner/bootstrap_ssh.py
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Create the dedicated loopback-only deployment key and pin the host key
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/python3
+      - /tmp/llm-actions-runner/bootstrap_ssh.py
+  register: actions_runner_ssh_bootstrap
+  changed_when: (actions_runner_ssh_bootstrap.stdout | from_json).changed
+  no_log: true
+  when: not ansible_check_mode
+
+- name: Copy only the validated bcrypt hash to private runner storage
+  ansible.builtin.copy:
+    content: "{{ lookup('protected_bcrypt', actions_runner_bcrypt_source_file) }}\n"
+    dest: /tmp/llm-actions-runner/protected/password.bcrypt
+    owner: llm-runner
+    group: llm-runner
+    mode: "0600"
+    follow: false
+  no_log: true
+  diff: false
+
+- name: Install the separate protected registration helper
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../scripts/configure_actions_runner.py"
+    dest: /tmp/llm-actions-runner/configure_actions_runner.py
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install the disabled runner service
+  ansible.builtin.template:
+    src: llm-actions-runner.service.j2
+    dest: /etc/systemd/system/llm-actions-runner.service
+    owner: root
+    group: root
+    mode: "0644"
+  register: actions_runner_unit
+
+- name: Load the service definition without starting the runner
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+  when:
+    - actions_runner_unit.changed
+    - not ansible_check_mode
+
+- name: Leave registration and startup to the protected registration step
+  ansible.builtin.systemd_service:
+    name: llm-actions-runner.service
+    state: stopped
+    enabled: false
+  when: not ansible_check_mode

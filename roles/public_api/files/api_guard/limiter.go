@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/netip"
 	"regexp"
+	"strings"
 	"sync"
 	"time"
 )
@@ -42,20 +43,27 @@ func takeBuckets(now time.Time, buckets ...*bucket) (bool, int) {
 }
 
 type ipState struct {
-	all, unknown *bucket
-	seen         time.Time
+	api, grafana, unknown *bucket
+	seen                  time.Time
 }
 type admission struct {
-	mu                                                       sync.Mutex
-	cfg                                                      Config
-	ips                                                      map[netip.Addr]*ipState
-	known                                                    map[[32]byte]time.Time
-	allGlobal, unknownGlobal, userInference, globalInference *bucket
-	lastSweep                                                time.Time
+	mu                                                                      sync.Mutex
+	cfg                                                                     Config
+	ips, anonymous                                                          map[netip.Addr]*ipState
+	known                                                                   map[[32]byte]time.Time
+	apiGlobal, grafanaGlobal, unknownGlobal, userInference, globalInference *bucket
+	lastSweep                                                               time.Time
 }
 
 func newAdmission(c Config, now time.Time) *admission {
-	return &admission{cfg: c, ips: make(map[netip.Addr]*ipState), known: make(map[[32]byte]time.Time), allGlobal: newBucket(c.KnownGlobalRPM, c.KnownGlobalBurst, now), unknownGlobal: newBucket(c.UnknownGlobalRPM, c.UnknownGlobalBurst, now), userInference: newBucket(c.InferenceRPM, c.InferenceBurst, now), globalInference: newBucket(c.InferenceRPM, c.InferenceBurst, now), lastSweep: now}
+	return &admission{cfg: c, ips: make(map[netip.Addr]*ipState), anonymous: make(map[netip.Addr]*ipState), known: make(map[[32]byte]time.Time), apiGlobal: newBucket(c.KnownGlobalRPM, c.KnownGlobalBurst, now), grafanaGlobal: newBucket(c.GrafanaGlobalRPM, c.GrafanaGlobalBurst, now), unknownGlobal: newBucket(c.UnknownGlobalRPM, c.UnknownGlobalBurst, now), userInference: newBucket(c.InferenceRPM, c.InferenceBurst, now), globalInference: newBucket(c.InferenceRPM, c.InferenceBurst, now), lastSweep: now}
+}
+
+func grafanaRequest(r *http.Request) bool {
+	// Caddy overwrites this on its loopback-only admission subrequest. Do not
+	// classify arbitrary prefixes such as /grafana-other as dashboard traffic.
+	path := r.Header.Get("X-Guard-Path")
+	return path == "/grafana" || strings.HasPrefix(path, "/grafana/")
 }
 
 var passwordShape = regexp.MustCompile(`^[A-Za-z0-9_-]{32,128}$`)
@@ -82,29 +90,51 @@ func (a *admission) sweep(now time.Time) {
 		}
 	}
 	if now.Sub(a.lastSweep) >= 30*time.Second || len(a.ips) >= a.cfg.IPCapacity {
-		for ip, state := range a.ips {
-			if now.Sub(state.seen) >= time.Duration(a.cfg.IPTTLSeconds)*time.Second {
-				delete(a.ips, ip)
+		for _, states := range []map[netip.Addr]*ipState{a.ips, a.anonymous} {
+			for ip, state := range states {
+				if now.Sub(state.seen) >= time.Duration(a.cfg.IPTTLSeconds)*time.Second {
+					delete(states, ip)
+				}
 			}
 		}
 		a.lastSweep = now
 	}
 }
-func (a *admission) admit(ip netip.Addr, hash [32]byte, shape bool, now time.Time) (bool, int) {
+func (a *admission) admit(ip netip.Addr, hash [32]byte, shape, grafana bool, now time.Time) (bool, int) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.sweep(now)
 	_, known := a.known[hash]
 	known = known && shape
-	state, exists := a.ips[ip]
+	states := a.ips
+	if !shape {
+		// Cheap 401 challenges must not occupy the entries that preserve
+		// plausible-password limits or exclude a new authenticated client.
+		states = a.anonymous
+	}
+	state, exists := states[ip]
+	var evict netip.Addr
 	if !exists {
-		if len(a.ips) >= a.cfg.IPCapacity {
+		if shape && len(states) >= a.cfg.IPCapacity {
 			return false, 1
 		}
-		state = &ipState{newBucket(a.cfg.KnownPerIPRPM, a.cfg.KnownPerIPBurst, now), newBucket(a.cfg.UnknownPerIPRPM, a.cfg.UnknownPerIPBurst, now), now}
+		if !shape && len(states) >= min(1024, a.cfg.IPCapacity) {
+			var oldest time.Time
+			for address, entry := range states {
+				if oldest.IsZero() || entry.seen.Before(oldest) {
+					oldest, evict = entry.seen, address
+				}
+			}
+		}
+		state = &ipState{api: newBucket(a.cfg.KnownPerIPRPM, a.cfg.KnownPerIPBurst, now), grafana: newBucket(a.cfg.GrafanaPerIPRPM, a.cfg.GrafanaPerIPBurst, now), unknown: newBucket(a.cfg.UnknownPerIPRPM, a.cfg.UnknownPerIPBurst, now), seen: now}
 	}
-	buckets := []*bucket{a.allGlobal, state.all}
-	if !known {
+	buckets := []*bucket{a.apiGlobal, state.api}
+	if grafana {
+		buckets = []*bucket{a.grafanaGlobal, state.grafana}
+	}
+	// Missing or malformed credentials never reach bcrypt, so challenging them
+	// must not spend the scarce allowance for plausible password attempts.
+	if shape && !known {
 		buckets = append(buckets, a.unknownGlobal, state.unknown)
 	}
 	ok, retry := takeBuckets(now, buckets...)
@@ -112,7 +142,10 @@ func (a *admission) admit(ip netip.Addr, hash [32]byte, shape bool, now time.Tim
 		state.seen = now
 	}
 	if ok && !exists {
-		a.ips[ip] = state
+		if evict.IsValid() {
+			delete(states, evict)
+		}
+		states[ip] = state
 	}
 	return ok, retry
 }
