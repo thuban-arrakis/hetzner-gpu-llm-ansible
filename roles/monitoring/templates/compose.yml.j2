@@ -1,0 +1,140 @@
+services:
+  victoriametrics:
+    image: {{ monitoring_victoriametrics_image | to_json }}
+    user: "65534:65534"
+    network_mode: host
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: {{ monitoring_victoriametrics_memory | to_json }}
+    cpus: "1.0"
+    pids_limit: 128
+    environment:
+      GOMEMLIMIT: 384MiB
+    command:
+      - -promscrape.config=/etc/llm-monitoring/scrape.yml
+      - -storageDataPath=/victoria-metrics-data
+      - -retentionPeriod={{ monitoring_retention_time }}
+      - -httpListenAddr=127.0.0.1:8428
+      - -memory.allowedBytes={{ monitoring_victoriametrics_cache_memory }}
+      - -search.maxConcurrentRequests=4
+      - -search.maxSamplesPerQuery=5000000
+      - -loggerLevel=WARN
+    volumes:
+      - /etc/llm-monitoring/scrape.yml:/etc/llm-monitoring/scrape.yml:ro
+      - /var/lib/llm-monitoring/victoriametrics:/victoria-metrics-data
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    healthcheck:
+      test: [CMD, wget, --spider, -q, "http://127.0.0.1:8428/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    logging:
+      driver: json-file
+      options: {max-size: 10m, max-file: "3"}
+
+  grafana:
+    image: {{ monitoring_grafana_image | to_json }}
+    user: "472:472"
+    network_mode: host
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: {{ monitoring_grafana_memory | to_json }}
+    cpus: "1.0"
+    pids_limit: 256
+    environment:
+      GF_SERVER_HTTP_ADDR: 127.0.0.1
+      GF_SERVER_HTTP_PORT: "3000"
+      GF_SERVER_ROOT_URL: {{ ('https://' ~ public_api_address ~ '/grafana/') | to_json }}
+      GF_SERVER_SERVE_FROM_SUB_PATH: "true"
+      GF_SERVER_ROUTER_LOGGING: "false"
+      GF_AUTH_PROXY_ENABLED: "true"
+      GF_AUTH_PROXY_HEADER_NAME: X-WEBAUTH-USER
+      GF_AUTH_PROXY_HEADER_PROPERTY: username
+      GF_AUTH_PROXY_AUTO_SIGN_UP: "true"
+      GF_AUTH_PROXY_WHITELIST: 127.0.0.1
+      GF_AUTH_PROXY_ENABLE_LOGIN_TOKEN: "false"
+      GF_AUTH_PROXY_HEADERS: ""
+      GF_AUTH_BASIC_ENABLED: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_AUTH_DISABLE_SIGNOUT_MENU: "true"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_USERS_ALLOW_ORG_CREATE: "false"
+      GF_USERS_AUTO_ASSIGN_ORG: "true"
+      GF_USERS_AUTO_ASSIGN_ORG_ROLE: Admin
+      GF_SECURITY_DISABLE_INITIAL_ADMIN_CREATION: "true"
+      GF_SECURITY_SECRET_KEY: "$$__file{/run/secrets/grafana-secret-key}"
+      GF_SECURITY_COOKIE_SECURE: "true"
+      GF_SECURITY_COOKIE_SAMESITE: strict
+      GF_SECURITY_DISABLE_GRAVATAR: "true"
+      GF_SECURITY_DATA_SOURCE_PROXY_WHITELIST: "127.0.0.1:8428"
+      GF_SMTP_ENABLED: "false"
+      GF_METRICS_ENABLED: "true"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES: "false"
+      GF_PLUGINS_PREINSTALL_DISABLED: "true"
+      GF_PLUGINS_PREINSTALL_AUTO_UPDATE: "false"
+      GF_PLUGINS_PLUGIN_ADMIN_ENABLED: "false"
+      GF_SNAPSHOTS_EXTERNAL_ENABLED: "false"
+      GF_LOG_MODE: console
+      GF_LOG_LEVEL: warn
+      GF_PATHS_LOGS: /tmp
+      GF_PATHS_PROVISIONING: /etc/grafana/provisioning
+    volumes:
+      - /etc/llm-monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - /etc/llm-monitoring/grafana/dashboards:/etc/llm-monitoring/grafana/dashboards:ro
+      - /var/lib/llm-monitoring/grafana:/var/lib/grafana
+      - /var/lib/llm-monitoring/grafana-secret-key:/run/secrets/grafana-secret-key:ro
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    healthcheck:
+      test: [CMD, wget, --spider, -q, "http://127.0.0.1:3000/grafana/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+    logging:
+      driver: json-file
+      options: {max-size: 10m, max-file: "3"}
+
+  node_exporter:
+    image: {{ monitoring_node_exporter_image | to_json }}
+    user: "65534:65534"
+    network_mode: host
+    pid: host
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 128m
+    cpus: "0.5"
+    pids_limit: 64
+    command:
+      - --web.listen-address=127.0.0.1:9100
+      - --path.rootfs=/host
+      - --path.procfs=/host/proc
+      - --path.sysfs=/host/sys
+      - --collector.textfile.directory=/textfile
+      - --collector.filesystem.mount-points-exclude=^/(dev|proc|sys|var/lib/docker/.+|var/lib/containers/storage/.+)($|/)
+      - --no-collector.wifi
+      - --no-collector.hwmon
+      - --log.level=warn
+    volumes:
+      - /:/host:ro,rslave
+      - /var/lib/llm-monitoring/node-textfile:/textfile:ro
+    healthcheck:
+      test: [CMD, wget, --spider, -q, "http://127.0.0.1:9100/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: json-file
+      options: {max-size: 10m, max-file: "3"}

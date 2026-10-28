@@ -28,6 +28,8 @@
     - role: server_security
     # Install packages/services before starting GPU containers: systemd daemon
     # reloads can disrupt the NVIDIA legacy runtime on some host combinations.
+    - role: monitoring
+      when: monitoring_enabled | default(false) | bool
     - role: public_api
       when: public_api_enabled | default(false) | bool
     - role: ollama

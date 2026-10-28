@@ -1,0 +1,12 @@
+---
+apiVersion: 1
+providers:
+  - name: llm-monitoring
+    orgId: 1
+    folder: LLM
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: false
+    options:
+      path: /etc/llm-monitoring/grafana/dashboards

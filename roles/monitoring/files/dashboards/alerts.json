@@ -1,0 +1,410 @@
+{
+  "id": null,
+  "uid": "llm-alerts",
+  "title": "LLM \u00b7 Alerts",
+  "description": "Native Grafana alert list and state counts for the real VictoriaMetrics-backed evaluation rules.",
+  "tags": [
+    "llm-monitoring"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "editable": false,
+  "graphTooltip": 1,
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "timepicker": {},
+  "templating": {
+    "list": []
+  },
+  "annotations": {
+    "list": []
+  },
+  "links": [
+    {
+      "title": "Host",
+      "type": "link",
+      "url": "/grafana/d/llm-host",
+      "keepTime": true,
+      "includeVars": true
+    },
+    {
+      "title": "LLM",
+      "type": "link",
+      "url": "/grafana/d/llm-service",
+      "keepTime": true,
+      "includeVars": true
+    },
+    {
+      "title": "GPU",
+      "type": "link",
+      "url": "/grafana/d/llm-gpu",
+      "keepTime": true,
+      "includeVars": true
+    },
+    {
+      "title": "Alerts",
+      "type": "link",
+      "url": "/grafana/d/llm-alerts",
+      "keepTime": true,
+      "includeVars": true
+    },
+    {
+      "title": "Gateway",
+      "type": "link",
+      "url": "/grafana/d/llm-gateway",
+      "keepTime": true
+    }
+  ],
+  "panels": [
+    {
+      "id": 1,
+      "title": "Live Grafana-managed alert states",
+      "type": "text",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 4
+      },
+      "description": "",
+      "options": {
+        "mode": "markdown",
+        "content": "Grafana evaluates real conditions against **VictoriaMetrics** every 30 seconds. Pending conditions must persist for the configured hold time before firing. [Open the full rule list](/grafana/alerting/list). **Notifications are always muted; alert evaluation stays active.** No external delivery is configured. A complete host outage still needs an independent external monitor."
+      }
+    },
+    {
+      "id": 2,
+      "title": "Critical firing",
+      "type": "alertlist",
+      "gridPos": {
+        "x": 0,
+        "y": 4,
+        "w": 6,
+        "h": 4
+      },
+      "description": "",
+      "options": {
+        "viewMode": "stat",
+        "maxItems": 50,
+        "sortOrder": 3,
+        "dashboardAlerts": false,
+        "groupMode": "default",
+        "groupBy": [],
+        "alertName": "",
+        "showInstances": true,
+        "stateFilter": {
+          "firing": true,
+          "pending": false,
+          "recovering": false,
+          "noData": false,
+          "normal": false,
+          "error": false
+        },
+        "alertInstanceLabelFilter": "{severity=\"critical\",service=\"llm-monitoring\"}",
+        "showInactiveAlerts": false,
+        "statColorMode": "value",
+        "statThresholds": {
+          "mode": "absolute",
+          "steps": [
+            {
+              "color": "green",
+              "value": null
+            },
+            {
+              "color": "red",
+              "value": 1
+            }
+          ]
+        },
+        "statValueMappings": []
+      }
+    },
+    {
+      "id": 3,
+      "title": "Warning firing",
+      "type": "alertlist",
+      "gridPos": {
+        "x": 6,
+        "y": 4,
+        "w": 6,
+        "h": 4
+      },
+      "description": "",
+      "options": {
+        "viewMode": "stat",
+        "maxItems": 50,
+        "sortOrder": 3,
+        "dashboardAlerts": false,
+        "groupMode": "default",
+        "groupBy": [],
+        "alertName": "",
+        "showInstances": true,
+        "stateFilter": {
+          "firing": true,
+          "pending": false,
+          "recovering": false,
+          "noData": false,
+          "normal": false,
+          "error": false
+        },
+        "alertInstanceLabelFilter": "{severity=\"warning\",service=\"llm-monitoring\"}",
+        "showInactiveAlerts": false,
+        "statColorMode": "value",
+        "statThresholds": {
+          "mode": "absolute",
+          "steps": [
+            {
+              "color": "green",
+              "value": null
+            },
+            {
+              "color": "red",
+              "value": 1
+            }
+          ]
+        },
+        "statValueMappings": []
+      }
+    },
+    {
+      "id": 4,
+      "title": "Pending",
+      "type": "alertlist",
+      "gridPos": {
+        "x": 12,
+        "y": 4,
+        "w": 6,
+        "h": 4
+      },
+      "description": "",
+      "options": {
+        "viewMode": "stat",
+        "maxItems": 50,
+        "sortOrder": 3,
+        "dashboardAlerts": false,
+        "groupMode": "default",
+        "groupBy": [],
+        "alertName": "",
+        "showInstances": true,
+        "stateFilter": {
+          "firing": false,
+          "pending": true,
+          "recovering": false,
+          "noData": false,
+          "normal": false,
+          "error": false
+        },
+        "alertInstanceLabelFilter": "{service=\"llm-monitoring\"}",
+        "showInactiveAlerts": false,
+        "statColorMode": "value",
+        "statThresholds": {
+          "mode": "absolute",
+          "steps": [
+            {
+              "color": "green",
+              "value": null
+            },
+            {
+              "color": "red",
+              "value": 1
+            }
+          ]
+        },
+        "statValueMappings": []
+      }
+    },
+    {
+      "id": 5,
+      "title": "VictoriaMetrics scrape",
+      "type": "stat",
+      "gridPos": {
+        "x": 18,
+        "y": 4,
+        "w": 6,
+        "h": 4
+      },
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "victoriametrics"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "N/A",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "Down",
+                  "color": "red"
+                },
+                "1": {
+                  "text": "Healthy",
+                  "color": "green"
+                }
+              }
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "victoriametrics"
+          },
+          "expr": "up{job=\"victoriametrics\"}",
+          "legendFormat": "",
+          "refId": "A",
+          "range": false,
+          "instant": true,
+          "format": "time_series",
+          "editorMode": "code"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "textMode": "value",
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto"
+      }
+    },
+    {
+      "id": 6,
+      "title": "Firing, pending and evaluation errors",
+      "type": "alertlist",
+      "gridPos": {
+        "x": 0,
+        "y": 8,
+        "w": 24,
+        "h": 12
+      },
+      "description": "",
+      "options": {
+        "viewMode": "list",
+        "maxItems": 50,
+        "sortOrder": 3,
+        "dashboardAlerts": false,
+        "groupMode": "default",
+        "groupBy": [],
+        "alertName": "",
+        "showInstances": true,
+        "stateFilter": {
+          "firing": true,
+          "pending": true,
+          "recovering": true,
+          "noData": true,
+          "normal": false,
+          "error": true
+        },
+        "alertInstanceLabelFilter": "",
+        "showInactiveAlerts": false,
+        "statColorMode": "value",
+        "statThresholds": {
+          "mode": "absolute",
+          "steps": [
+            {
+              "color": "green",
+              "value": null
+            },
+            {
+              "color": "red",
+              "value": 1
+            }
+          ]
+        },
+        "statValueMappings": []
+      }
+    },
+    {
+      "id": 7,
+      "title": "All provisioned rules and their states",
+      "type": "alertlist",
+      "gridPos": {
+        "x": 0,
+        "y": 20,
+        "w": 24,
+        "h": 16
+      },
+      "description": "",
+      "options": {
+        "viewMode": "list",
+        "maxItems": 50,
+        "sortOrder": 3,
+        "dashboardAlerts": false,
+        "groupMode": "default",
+        "groupBy": [],
+        "alertName": "",
+        "showInstances": true,
+        "stateFilter": {
+          "firing": true,
+          "pending": true,
+          "recovering": true,
+          "noData": true,
+          "normal": true,
+          "error": true
+        },
+        "alertInstanceLabelFilter": "",
+        "showInactiveAlerts": true,
+        "statColorMode": "value",
+        "statThresholds": {
+          "mode": "absolute",
+          "steps": [
+            {
+              "color": "green",
+              "value": null
+            },
+            {
+              "color": "red",
+              "value": 1
+            }
+          ]
+        },
+        "statValueMappings": []
+      }
+    },
+    {
+      "id": 8,
+      "title": "Coverage and interpretation",
+      "type": "text",
+      "gridPos": {
+        "x": 0,
+        "y": 36,
+        "w": 24,
+        "h": 6
+      },
+      "description": "",
+      "options": {
+        "mode": "markdown",
+        "content": "**Host:** exporter unavailable, sustained CPU pressure, low available RAM, low disk space, or read-only filesystems.\n\n**LLM:** exporter/API down, missing model, stale health or inference, repeated synthetic errors, and slow synthetic inference. Probe counters do not represent user API traffic.\n\n**GPU:** collection failure/staleness only in NVIDIA mode, high actual device temperature, and sustained VRAM pressure. CPU hosts do not fire missing-GPU alerts.\n\nRules are source-controlled in `roles/monitoring/files/grafana-alerts.yml`. Notifications remain muted by the separate policy; explicitly authorize and configure delivery before enabling it."
+      }
+    }
+  ]
+}

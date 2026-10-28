@@ -1,0 +1,997 @@
+---
+# Grafana-managed rules querying VictoriaMetrics; delivery is muted separately.
+apiVersion: 1
+groups:
+  - orgId: 1
+    name: llm-host
+    folder: LLM
+    interval: 30s
+    rules:
+      - uid: llm-hostexporterdown
+        title: HostExporterDown
+        condition: B
+        data:
+          - refId: A
+            datasourceUid: victoriametrics
+            relativeTimeRange:
+              from: 600
+              to: 0
+            model:
+              datasource:
+                type: prometheus
+                uid: victoriametrics
+              editorMode: code
+              expr: (up{job="node"} == 0 or absent(up{job="node"})) * 0 + 1
+              instant: true
+              range: false
+              format: time_series
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 0
+              to: 0
+            model:
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: $A > 0
+              type: math
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: B
+        noDataState: OK
+        execErrState: Error
+        for: 2m
+        isPaused: false
+        annotations:
+          summary: Host metrics are unavailable
+          description: >-
+            Check the host and node exporter. This local monitoring stack cannot observe a full
+
+            server outage itself.
+          dashboard_url: /grafana/d/llm-host
+        labels:
+          severity: critical
+          component: host
+          service: llm-monitoring
+          notification_scope: local_only
+      - uid: llm-hostcpusaturated
+        title: HostCpuSaturated
+        condition: B
+        data:
+          - refId: A
+            datasourceUid: victoriametrics
+            relativeTimeRange:
+              from: 600
+              to: 0
+            model:
+              datasource:
+                type: prometheus
+                uid: victoriametrics
+              editorMode: code
+              expr: >-
+                (100 * (1 - avg by (instance)
+
+                (rate(node_cpu_seconds_total{job="node",mode="idle"}[5m]))) > 90) * 0 + 1
+              instant: true
+              range: false
+              format: time_series
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 0
+              to: 0
+            model:
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: $A > 0
+              type: math
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: B
+        noDataState: OK
+        execErrState: Error
+        for: 15m
+        isPaused: false
+        annotations:
+          summary: CPU usage has exceeded 90% for 15 minutes
+          description: Review inference concurrency, background jobs, and CPU capacity.
+          dashboard_url: /grafana/d/llm-host
+        labels:
+          severity: warning
+          component: host
+          service: llm-monitoring
+          notification_scope: local_only
+      - uid: llm-hostmemorypressure
+        title: HostMemoryPressure
+        condition: B
+        data:
+          - refId: A
+            datasourceUid: victoriametrics
+            relativeTimeRange:
+              from: 600
+              to: 0
+            model:
+              datasource:
+                type: prometheus
+                uid: victoriametrics
+              editorMode: code
+              expr: >-
+                (100 * (1 - node_memory_MemAvailable_bytes{job="node"} /
+
+                node_memory_MemTotal_bytes{job="node"}) > 90) * 0 + 1
+              instant: true
+              range: false
+              format: time_series
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 0
+              to: 0
+            model:
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: $A > 0
+              type: math
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: B
+        noDataState: OK
+        execErrState: Error
+        for: 10m
+        isPaused: false
+        annotations:
+          summary: Available system memory is below 10%
+          description: Review model size, context length, concurrency, and other host processes.
+          dashboard_url: /grafana/d/llm-host
+        labels:
+          severity: warning
+          component: host
+          service: llm-monitoring
+          notification_scope: local_only
+      - uid: llm-hostmemorycritical
+        title: HostMemoryCritical
+        condition: B
+        data:
+          - refId: A
+            datasourceUid: victoriametrics
+            relativeTimeRange:
+              from: 600
+              to: 0
+            model:
+              datasource:
+                type: prometheus
+                uid: victoriametrics
+              editorMode: code
+              expr: >-
+                (100 * (1 - node_memory_MemAvailable_bytes{job="node"} /
+
+                node_memory_MemTotal_bytes{job="node"}) > 97) * 0 + 1
+              instant: true
+              range: false
+              format: time_series
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 0
+              to: 0
+            model:
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: $A > 0
+              type: math
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: B
+        noDataState: OK
+        execErrState: Error
+        for: 5m
+        isPaused: false
+        annotations:
+          summary: Available system memory is below 3%
+          description: The host risks out-of-memory termination. Reduce memory demand or increase capacity.
+          dashboard_url: /grafana/d/llm-host
+        labels:
+          severity: critical
+          component: host
+          service: llm-monitoring
+          notification_scope: local_only
+      - uid: llm-hostfilesystemlowspace
+        title: HostFilesystemLowSpace
+        condition: B
+        data:
+          - refId: A
+            datasourceUid: victoriametrics
+            relativeTimeRange:
+              from: 600
+              to: 0
+            model:
+              datasource:
+                type: prometheus
+                uid: victoriametrics
+              editorMode: code
+              expr: >-
+                ((node_filesystem_avail_bytes{job="node",fstype=~"ext[234]|xfs|btrfs|zfs"} /
+
+                node_filesystem_size_bytes{job="node",fstype=~"ext[234]|xfs|btrfs|zfs"} < 0.10) and
+
+                on (instance, device, mountpoint) (node_filesystem_readonly{job="node"} == 0)) * 0 +
+
+                1
+              instant: true
+              range: false
+              format: time_series
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 0
+              to: 0
+            model:
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: $A > 0
+              type: math
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: B
+        noDataState: OK
+        execErrState: Error
+        for: 15m
+        isPaused: false
+        annotations:
+          summary: Filesystem free space is below 10%
+          description: >-
+            Review model storage, container logs, and VictoriaMetrics retention on the affected
+
+            mountpoint.
+          dashboard_url: /grafana/d/llm-host
+        labels:
+          severity: warning
+          component: host
+          service: llm-monitoring
+          notification_scope: local_only
+      - uid: llm-hostfilesystemcriticalspace
+        title: HostFilesystemCriticalSpace
+        condition: B
+        data:
+          - refId: A
+            datasourceUid: victoriametrics
+            relativeTimeRange:
+              from: 600
+              to: 0
+            model:
+              datasource:
+                type: prometheus
+                uid: victoriametrics
+              editorMode: code
+              expr: >-
+                ((node_filesystem_avail_bytes{job="node",fstype=~"ext[234]|xfs|btrfs|zfs"} /
+
+                node_filesystem_size_bytes{job="node",fstype=~"ext[234]|xfs|btrfs|zfs"} < 0.05) and
+
+                on (instance, device, mountpoint) (node_filesystem_readonly{job="node"} == 0)) * 0 +
+
+                1
+              instant: true
+              range: false
+              format: time_series
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 0
+              to: 0
+            model:
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: $A > 0
+              type: math
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: B
+        noDataState: OK
+        execErrState: Error
+        for: 5m
+        isPaused: false
+        annotations:
+          summary: Filesystem free space is below 5%
+          description: Free space promptly to avoid failed model downloads, log writes, or metric ingestion.
+          dashboard_url: /grafana/d/llm-host
+        labels:
+          severity: critical
+          component: host
+          service: llm-monitoring
+          notification_scope: local_only
+      - uid: llm-hostfilesystemreadonly
+        title: HostFilesystemReadOnly
+        condition: B
+        data:
+          - refId: A
+            datasourceUid: victoriametrics
+            relativeTimeRange:
+              from: 600
+              to: 0
+            model:
+              datasource:
+                type: prometheus
+                uid: victoriametrics
+              editorMode: code
+              expr: (node_filesystem_readonly{job="node",fstype=~"ext[234]|xfs|btrfs|zfs"} == 1) * 0 +
+                1
+              instant: true
+              range: false
+              format: time_series
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 0
+              to: 0
+            model:
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: $A > 0
+              type: math
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: B
+        noDataState: OK
+        execErrState: Error
+        for: 2m
+        isPaused: false
+        annotations:
+          summary: A persistent filesystem is read-only
+          description: Inspect filesystem and kernel errors before attempting a repair.
+          dashboard_url: /grafana/d/llm-host
+        labels:
+          severity: critical
+          component: host
+          service: llm-monitoring
+          notification_scope: local_only
+  - orgId: 1
+    name: llm-llm
+    folder: LLM
+    interval: 30s
+    rules:
+      - uid: llm-llmexporterdown
+        title: LlmExporterDown
+        condition: B
+        data:
+          - refId: A
+            datasourceUid: victoriametrics
+            relativeTimeRange:
+              from: 600
+              to: 0
+            model:
+              datasource:
+                type: prometheus
+                uid: victoriametrics
+              editorMode: code
+              expr: (up{job="llm"} == 0 or absent(up{job="llm"})) * 0 + 1
+              instant: true
+              range: false
+              format: time_series
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 0
+              to: 0
+            model:
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: $A > 0
+              type: math
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: B
+        noDataState: OK
+        execErrState: Error
+        for: 2m
+        isPaused: false
+        annotations:
+          summary: The LLM exporter is unavailable
+          description: Model health and synthetic inference cannot be observed until the exporter recovers.
+          dashboard_url: /grafana/d/llm-service
+        labels:
+          severity: critical
+          component: llm
+          service: llm-monitoring
+          notification_scope: local_only
+      - uid: llm-llmapidown
+        title: LlmApiDown
+        condition: B
+        data:
+          - refId: A
+            datasourceUid: victoriametrics
+            relativeTimeRange:
+              from: 600
+              to: 0
+            model:
+              datasource:
+                type: prometheus
+                uid: victoriametrics
+              editorMode: code
+              expr: (llm_api_up{job="llm"} == 0) * 0 + 1
+              instant: true
+              range: false
+              format: time_series
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 0
+              to: 0
+            model:
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: $A > 0
+              type: math
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: B
+        noDataState: OK
+        execErrState: Error
+        for: 2m
+        isPaused: false
+        annotations:
+          summary: The local Ollama API is unavailable
+          description: Inspect Ollama, Docker, and the bounded recovery watchdog.
+          dashboard_url: /grafana/d/llm-service
+        labels:
+          severity: critical
+          component: llm
+          service: llm-monitoring
+          notification_scope: local_only
+      - uid: llm-llmconfiguredmodelmissing
+        title: LlmConfiguredModelMissing
+        condition: B
+        data:
+          - refId: A
+            datasourceUid: victoriametrics
+            relativeTimeRange:
+              from: 600
+              to: 0
+            model:
+              datasource:
+                type: prometheus
+                uid: victoriametrics
+              editorMode: code
+              expr: (llm_model_available{job="llm"} == 0) * 0 + 1
+              instant: true
+              range: false
+              format: time_series
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 0
+              to: 0
+            model:
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: $A > 0
+              type: math
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: B
+        noDataState: OK
+        execErrState: Error
+        for: 5m
+        isPaused: false
+        annotations:
+          summary: The configured model is missing from Ollama
+          description: Restore the approved model artifact. Restarting alone cannot restore a deleted
+            model.
+          dashboard_url: /grafana/d/llm-service
+        labels:
+          severity: critical
+          component: llm
+          service: llm-monitoring
+          notification_scope: local_only
+      - uid: llm-llmhealthprobestale
+        title: LlmHealthProbeStale
+        condition: B
+        data:
+          - refId: A
+            datasourceUid: victoriametrics
+            relativeTimeRange:
+              from: 600
+              to: 0
+            model:
+              datasource:
+                type: prometheus
+                uid: victoriametrics
+              editorMode: code
+              expr: (time() - llm_health_last_success_timestamp_seconds{job="llm"} > 120) * 0 + 1
+              instant: true
+              range: false
+              format: time_series
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 0
+              to: 0
+            model:
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: $A > 0
+              type: math
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: B
+        noDataState: OK
+        execErrState: Error
+        for: 2m
+        isPaused: false
+        annotations:
+          summary: No successful LLM health probe for over two minutes
+          description: The exporter is reachable but its model/API health checks are failing or stalled.
+          dashboard_url: /grafana/d/llm-service
+        labels:
+          severity: critical
+          component: llm
+          service: llm-monitoring
+          notification_scope: local_only
+      - uid: llm-llminferenceprobefailed
+        title: LlmInferenceProbeFailed
+        condition: B
+        data:
+          - refId: A
+            datasourceUid: victoriametrics
+            relativeTimeRange:
+              from: 600
+              to: 0
+            model:
+              datasource:
+                type: prometheus
+                uid: victoriametrics
+              editorMode: code
+              expr: >-
+                ((llm_inference_probe_success{job="llm"} == 0) and on (instance)
+
+                (llm_inference_probe_requests_total{job="llm"} > 0)) * 0 + 1
+              instant: true
+              range: false
+              format: time_series
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 0
+              to: 0
+            model:
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: $A > 0
+              type: math
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: B
+        noDataState: OK
+        execErrState: Error
+        for: 5m
+        isPaused: false
+        annotations:
+          summary: The latest synthetic inference failed
+          description: >-
+            This is a fixed synthetic prompt, not a production request error rate. Check runtime
+
+            health and capacity.
+          dashboard_url: /grafana/d/llm-service
+        labels:
+          severity: warning
+          component: llm
+          service: llm-monitoring
+          notification_scope: local_only
+      - uid: llm-llmsuccessfulinferencestale
+        title: LlmSuccessfulInferenceStale
+        condition: B
+        data:
+          - refId: A
+            datasourceUid: victoriametrics
+            relativeTimeRange:
+              from: 600
+              to: 0
+            model:
+              datasource:
+                type: prometheus
+                uid: victoriametrics
+              editorMode: code
+              expr: (time() - llm_inference_last_success_timestamp_seconds{job="llm"} > 900) * 0 + 1
+              instant: true
+              range: false
+              format: time_series
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 0
+              to: 0
+            model:
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: $A > 0
+              type: math
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: B
+        noDataState: OK
+        execErrState: Error
+        for: 5m
+        isPaused: false
+        annotations:
+          summary: No successful synthetic inference for over 15 minutes
+          description: >-
+            The scheduled probe normally runs every five minutes. Inspect its worker and the
+
+            inference service.
+          dashboard_url: /grafana/d/llm-service
+        labels:
+          severity: critical
+          component: llm
+          service: llm-monitoring
+          notification_scope: local_only
+      - uid: llm-llmsyntheticinferenceslow
+        title: LlmSyntheticInferenceSlow
+        condition: B
+        data:
+          - refId: A
+            datasourceUid: victoriametrics
+            relativeTimeRange:
+              from: 600
+              to: 0
+            model:
+              datasource:
+                type: prometheus
+                uid: victoriametrics
+              editorMode: code
+              expr: (llm_inference_probe_duration_seconds{job="llm"} > 60) * 0 + 1
+              instant: true
+              range: false
+              format: time_series
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 0
+              to: 0
+            model:
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: $A > 0
+              type: math
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: B
+        noDataState: OK
+        execErrState: Error
+        for: 10m
+        isPaused: false
+        annotations:
+          summary: Synthetic inference repeatedly takes over 60 seconds
+          description: >-
+            Review model loading, CPU or GPU pressure, and request queues. Tune this baseline
+
+            for the selected model.
+          dashboard_url: /grafana/d/llm-service
+        labels:
+          severity: warning
+          component: llm
+          service: llm-monitoring
+          notification_scope: local_only
+      - uid: llm-llmsyntheticinferenceerrors
+        title: LlmSyntheticInferenceErrors
+        condition: B
+        data:
+          - refId: A
+            datasourceUid: victoriametrics
+            relativeTimeRange:
+              from: 600
+              to: 0
+            model:
+              datasource:
+                type: prometheus
+                uid: victoriametrics
+              editorMode: code
+              expr: (increase(llm_inference_probe_errors_total{job="llm"}[15m]) > 2) * 0 + 1
+              instant: true
+              range: false
+              format: time_series
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 0
+              to: 0
+            model:
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: $A > 0
+              type: math
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: B
+        noDataState: OK
+        execErrState: Error
+        for: 1m
+        isPaused: false
+        annotations:
+          summary: More than two synthetic inference errors in 15 minutes
+          description: These are monitoring-probe errors; production user request totals are not collected.
+          dashboard_url: /grafana/d/llm-service
+        labels:
+          severity: warning
+          component: llm
+          service: llm-monitoring
+          notification_scope: local_only
+  - orgId: 1
+    name: llm-gpu
+    folder: LLM
+    interval: 30s
+    rules:
+      - uid: llm-gpucollectorunavailable
+        title: GpuCollectorUnavailable
+        condition: B
+        data:
+          - refId: A
+            datasourceUid: victoriametrics
+            relativeTimeRange:
+              from: 600
+              to: 0
+            model:
+              datasource:
+                type: prometheus
+                uid: victoriametrics
+              editorMode: code
+              expr: >-
+                ((max(llm_exporter_info{job="llm",accelerator="nvidia"}) == 1) and on ()
+
+                ((max(llm_gpu_collection_success{job="node"}) == 0) or
+
+                absent(llm_gpu_collection_success{job="node"}))) * 0 + 1
+              instant: true
+              range: false
+              format: time_series
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 0
+              to: 0
+            model:
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: $A > 0
+              type: math
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: B
+        noDataState: OK
+        execErrState: Error
+        for: 2m
+        isPaused: false
+        annotations:
+          summary: NVIDIA GPU collection failed or is missing
+          description: >-
+            GPU mode is configured. Check nvidia-smi, driver/device access, and the GPU
+
+            collector service.
+          dashboard_url: /grafana/d/llm-gpu
+        labels:
+          severity: critical
+          component: gpu
+          service: llm-monitoring
+          notification_scope: local_only
+      - uid: llm-gpucollectorstale
+        title: GpuCollectorStale
+        condition: B
+        data:
+          - refId: A
+            datasourceUid: victoriametrics
+            relativeTimeRange:
+              from: 600
+              to: 0
+            model:
+              datasource:
+                type: prometheus
+                uid: victoriametrics
+              editorMode: code
+              expr: >-
+                ((max(llm_exporter_info{job="llm",accelerator="nvidia"}) == 1) and on () (time() -
+
+                max(llm_gpu_collection_timestamp_seconds{job="node"}) > 180)) * 0 + 1
+              instant: true
+              range: false
+              format: time_series
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 0
+              to: 0
+            model:
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: $A > 0
+              type: math
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: B
+        noDataState: OK
+        execErrState: Error
+        for: 2m
+        isPaused: false
+        annotations:
+          summary: NVIDIA GPU telemetry has not refreshed for three minutes
+          description: >-
+            Check the GPU textfile timer. Old textfile values must not be treated as current
+
+            device health.
+          dashboard_url: /grafana/d/llm-gpu
+        labels:
+          severity: warning
+          component: gpu
+          service: llm-monitoring
+          notification_scope: local_only
+      - uid: llm-gputemperaturehigh
+        title: GpuTemperatureHigh
+        condition: B
+        data:
+          - refId: A
+            datasourceUid: victoriametrics
+            relativeTimeRange:
+              from: 600
+              to: 0
+            model:
+              datasource:
+                type: prometheus
+                uid: victoriametrics
+              editorMode: code
+              expr: (llm_gpu_temperature_celsius{job="node"} > 85) * 0 + 1
+              instant: true
+              range: false
+              format: time_series
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 0
+              to: 0
+            model:
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: $A > 0
+              type: math
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: B
+        noDataState: OK
+        execErrState: Error
+        for: 5m
+        isPaused: false
+        annotations:
+          summary: GPU temperature has exceeded 85 degrees Celsius for five minutes
+          description: >-
+            Review thermal conditions, fan behavior, and sustained workload. Confirm the limit
+
+            for the installed GPU.
+          dashboard_url: /grafana/d/llm-gpu
+        labels:
+          severity: warning
+          component: gpu
+          service: llm-monitoring
+          notification_scope: local_only
+      - uid: llm-gpumemorypressure
+        title: GpuMemoryPressure
+        condition: B
+        data:
+          - refId: A
+            datasourceUid: victoriametrics
+            relativeTimeRange:
+              from: 600
+              to: 0
+            model:
+              datasource:
+                type: prometheus
+                uid: victoriametrics
+              editorMode: code
+              expr: >-
+                (llm_gpu_memory_used_bytes{job="node"} / llm_gpu_memory_total_bytes{job="node"} >
+
+                0.95) * 0 + 1
+              instant: true
+              range: false
+              format: time_series
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 0
+              to: 0
+            model:
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: $A > 0
+              type: math
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: B
+        noDataState: OK
+        execErrState: Error
+        for: 15m
+        isPaused: false
+        annotations:
+          summary: GPU memory usage has exceeded 95% for 15 minutes
+          description: >-
+            Review context length and concurrency. High residency can be intentional; this alert
+
+            indicates limited headroom.
+          dashboard_url: /grafana/d/llm-gpu
+        labels:
+          severity: warning
+          component: gpu
+          service: llm-monitoring
+          notification_scope: local_only

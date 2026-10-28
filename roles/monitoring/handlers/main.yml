@@ -1,0 +1,12 @@
+---
+- name: Monitoring restart exporter
+  ansible.builtin.systemd_service:
+    name: llm-exporter.service
+    state: restarted
+  when: not ansible_check_mode
+
+- name: Monitoring restart containers
+  ansible.builtin.systemd_service:
+    name: monitoring.service
+    state: restarted
+  when: not ansible_check_mode

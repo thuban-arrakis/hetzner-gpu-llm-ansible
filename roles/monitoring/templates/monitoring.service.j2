@@ -1,0 +1,18 @@
+[Unit]
+Description=Local VictoriaMetrics, Grafana and host metrics
+Requires=docker.service
+After=docker.service network-online.target llm-exporter.service
+Wants=network-online.target llm-exporter.service
+PartOf=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/etc/llm-monitoring
+ExecStart=/usr/bin/docker compose --project-name llm-monitoring --file /etc/llm-monitoring/compose.yml up --detach --remove-orphans --wait --wait-timeout 180
+ExecStop=/usr/bin/docker compose --project-name llm-monitoring --file /etc/llm-monitoring/compose.yml down
+TimeoutStartSec=240
+TimeoutStopSec=90
+
+[Install]
+WantedBy=multi-user.target

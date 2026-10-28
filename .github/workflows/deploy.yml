@@ -36,6 +36,10 @@ jobs:
           LLM_INVENTORY_FILE: ${{ vars.LLM_INVENTORY_FILE }}
           ALLOW_REBOOT: ${{ inputs.allow_reboot }}
         run: |
+          export ANSIBLE_HOME="$RUNNER_TEMP/llm-ansible"
+          export ANSIBLE_LOCAL_TEMP="$RUNNER_TEMP/llm-ansible/tmp"
+          export XDG_CACHE_HOME="$RUNNER_TEMP/llm-cache"
+          export TMPDIR="$RUNNER_TEMP"
           python3 -m venv "$RUNNER_TEMP/llm-controller"
           "$RUNNER_TEMP/llm-controller/bin/python" -m pip install -r requirements-dev.txt
           "$RUNNER_TEMP/llm-controller/bin/ansible-playbook" \

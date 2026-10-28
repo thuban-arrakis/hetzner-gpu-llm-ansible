@@ -1,0 +1,11 @@
+[Unit]
+Description=Collect NVIDIA telemetry every minute
+
+[Timer]
+OnBootSec=30
+OnUnitActiveSec=60
+AccuracySec=5
+Unit=gpu-metrics.service
+
+[Install]
+WantedBy=timers.target

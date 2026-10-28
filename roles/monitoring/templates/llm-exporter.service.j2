@@ -1,0 +1,29 @@
+[Unit]
+Description=Local bounded Ollama synthetic health metrics
+After=network.target
+
+[Service]
+Type=simple
+User=monitoring-exporter
+Group=monitoring-exporter
+ExecStart=/usr/bin/python3 /usr/local/lib/llm-monitoring/llm_exporter.py --config /etc/llm-monitoring/llm-exporter.json
+Restart=on-failure
+RestartSec=10
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_INET AF_UNIX
+CapabilityBoundingSet=
+MemoryMax=128M
+CPUQuota=10%
+TasksMax=32
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

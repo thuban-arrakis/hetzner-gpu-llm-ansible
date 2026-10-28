@@ -1,0 +1,12 @@
+{{ {
+  'api_url': 'http://127.0.0.1:' ~ (ollama_port | default(11434) | string),
+  'listen_host': '127.0.0.1',
+  'listen_port': 9400,
+  'model': ollama_model,
+  'accelerator': inference_accelerator | default('nvidia'),
+  'context_length': ollama_context_length | default(2048) | int,
+  'health_interval_seconds': monitoring_health_interval_seconds | int,
+  'inference_interval_seconds': monitoring_inference_interval_seconds | int,
+  'request_timeout_seconds': 10,
+  'inference_timeout_seconds': monitoring_inference_timeout_seconds | int
+} | to_nice_json }}

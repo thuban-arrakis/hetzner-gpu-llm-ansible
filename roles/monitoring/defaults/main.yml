@@ -1,0 +1,15 @@
+---
+monitoring_enabled: false
+# Official multi-platform image indexes, verified for linux/amd64 and linux/arm64.
+monitoring_victoriametrics_image: >-
+  victoriametrics/victoria-metrics:v1.155.0@sha256:f60dc268b54ecf87f6e09d740c2b732838aa9193090cc741417c9f6386a130df
+monitoring_grafana_image: "grafana/grafana:13.2.4@sha256:dbbc38ea21103cefb50396340cd88afec779c7e070b0a7bf5a75b4ce46651d3f"
+monitoring_node_exporter_image: "prom/node-exporter:v1.12.1@sha256:1b4e4438faca4dd7e001dd445d161a4a2091b0fededa84093b3a8dfeae1f1be0"
+monitoring_victoriametrics_memory: 512m
+monitoring_victoriametrics_cache_memory: 192MiB
+monitoring_grafana_memory: 512m
+monitoring_retention_time: 3d
+monitoring_scrape_interval: 30s
+monitoring_health_interval_seconds: 30
+monitoring_inference_interval_seconds: 300
+monitoring_inference_timeout_seconds: 120

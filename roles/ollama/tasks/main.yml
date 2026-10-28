@@ -164,7 +164,11 @@
   ansible.builtin.systemd_service:
     name: ollama.service
     enabled: true
-    state: started
+    # Reopen NVIDIA devices after a monitoring unit installation caused a
+    # systemd reload; unchanged deployments and explicit CPU mode only start.
+    state: >-
+      {{ 'restarted' if (inference_accelerator | default('nvidia') == 'nvidia'
+          and monitoring_systemd_reload_performed | default(false) | bool) else 'started' }}
   when: not ansible_check_mode
 
 - name: Wait for the local model catalogue

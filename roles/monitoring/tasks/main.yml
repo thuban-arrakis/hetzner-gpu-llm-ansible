@@ -1,0 +1,302 @@
+---
+- name: Validate private monitoring configuration
+  ansible.builtin.assert:
+    that:
+      - public_api_enabled | default(false) | bool
+      - inference_accelerator | default('nvidia') in ['nvidia', 'cpu']
+      - monitoring_victoriametrics_image is match('^victoriametrics/victoria-metrics:[a-zA-Z0-9._-]+@sha256:[a-f0-9]{64}$')
+      - monitoring_grafana_image is match('^grafana/grafana:[a-zA-Z0-9._-]+@sha256:[a-f0-9]{64}$')
+      - monitoring_node_exporter_image is match('^prom/node-exporter:[a-zA-Z0-9._-]+@sha256:[a-f0-9]{64}$')
+      - monitoring_victoriametrics_memory is match('^[1-9][0-9]*[gmGM]$')
+      - monitoring_victoriametrics_cache_memory is match('^[1-9][0-9]*MiB$')
+      - monitoring_grafana_memory is match('^[1-9][0-9]*[gmGM]$')
+      - monitoring_retention_time is match('^[1-9][0-9]*[hd]$')
+      - monitoring_scrape_interval is match('^[1-9][0-9]*s$')
+      - monitoring_health_interval_seconds | int >= 15
+      - monitoring_health_interval_seconds | int <= 300
+      - monitoring_inference_interval_seconds | int >= 300
+      - monitoring_inference_interval_seconds | int <= 86400
+      - monitoring_inference_timeout_seconds | int >= 5
+      - monitoring_inference_timeout_seconds | int <= 180
+      - monitoring_inference_timeout_seconds | int < monitoring_inference_interval_seconds | int
+      - ollama_context_length | default(2048) | int >= 512
+      - ollama_context_length | default(2048) | int <= 32768
+    fail_msg: Monitoring requires the authenticated HTTPS gateway, pinned images, and bounded probe intervals.
+
+- name: Create the monitoring exporter group
+  ansible.builtin.group:
+    name: monitoring-exporter
+    system: true
+
+- name: Create the unprivileged metrics identity
+  ansible.builtin.user:
+    name: monitoring-exporter
+    group: monitoring-exporter
+    system: true
+    create_home: false
+    home: /nonexistent
+    shell: /usr/sbin/nologin
+
+- name: Create root-managed monitoring directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - /etc/llm-monitoring
+    - /etc/llm-monitoring/grafana
+    - /etc/llm-monitoring/grafana/provisioning
+    - /etc/llm-monitoring/grafana/provisioning/datasources
+    - /etc/llm-monitoring/grafana/provisioning/dashboards
+    - /etc/llm-monitoring/grafana/provisioning/alerting
+    - /etc/llm-monitoring/grafana/provisioning/plugins
+    - /etc/llm-monitoring/grafana/dashboards
+    - /usr/local/lib/llm-monitoring
+    - /var/lib/llm-monitoring
+
+- name: Create persistent data directories with container ownership
+  ansible.builtin.file:
+    path: "/var/lib/llm-monitoring/{{ item.name }}"
+    state: directory
+    owner: "{{ item.owner }}"
+    group: "{{ item.group }}"
+    mode: "0750"
+  loop:
+    - {name: victoriametrics, owner: "65534", group: "65534"}
+    - {name: grafana, owner: "472", group: "472"}
+
+- name: Create the NVIDIA textfile collector directory
+  ansible.builtin.file:
+    path: /var/lib/llm-monitoring/node-textfile
+    state: directory
+    owner: monitoring-exporter
+    group: monitoring-exporter
+    mode: "0755"
+
+- name: Install the secret generator without reading its generated value
+  ansible.builtin.copy:
+    src: generate_grafana_key.py
+    dest: /usr/local/lib/llm-monitoring/generate_grafana_key.py
+    owner: root
+    group: root
+    mode: "0700"
+
+# Only fixed exit codes leave this command. The signing key is generated on the
+# target, kept in an owner-only file, and never passed through Ansible variables.
+- name: Generate or validate the protected Grafana signing key
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/python3
+      - /usr/local/lib/llm-monitoring/generate_grafana_key.py
+  register: monitoring_signing_key
+  changed_when: monitoring_signing_key.rc == 2
+  failed_when: monitoring_signing_key.rc not in [0, 2]
+  no_log: true
+  when: not ansible_check_mode
+
+- name: Render monitoring service configuration
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/etc/llm-monitoring/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - compose.yml
+    - scrape.yml
+  notify: Monitoring restart containers
+
+- name: Provision Grafana alert rules and local notification policy
+  ansible.builtin.copy:
+    src: "{{ item }}.yml"
+    dest: "/etc/llm-monitoring/grafana/provisioning/alerting/{{ item }}.yml"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: [grafana-alerts, grafana-notification-policy]
+  notify: Monitoring restart containers
+
+- name: Provision Grafana datasource and dashboard provider
+  ansible.builtin.copy:
+    src: "{{ item.src }}"
+    dest: "/etc/llm-monitoring/grafana/provisioning/{{ item.dest }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - {src: grafana-datasource.yml, dest: datasources/victoriametrics.yml}
+    - {src: grafana-dashboards.yml, dest: dashboards/default.yml}
+  notify: Monitoring restart containers
+
+- name: Provision Grafana dashboards
+  ansible.builtin.copy:
+    src: "dashboards/{{ item }}.json"
+    dest: "/etc/llm-monitoring/grafana/dashboards/{{ item }}.json"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: [host, llm, gpu, alerts, gateway]
+  notify: Monitoring restart containers
+
+- name: Install the bounded LLM and GPU metrics collectors
+  ansible.builtin.copy:
+    src: "{{ item }}.py"
+    dest: "/usr/local/lib/llm-monitoring/{{ item }}.py"
+    owner: root
+    group: root
+    mode: "0755"
+  loop: [llm_exporter, gpu_textfile]
+  notify: Monitoring restart exporter
+
+- name: Configure the local LLM synthetic metrics collector
+  ansible.builtin.template:
+    src: llm-exporter.json.j2
+    dest: /etc/llm-monitoring/llm-exporter.json
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Monitoring restart exporter
+
+- name: Install monitoring systemd units before final inference acceptance
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/etc/systemd/system/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - monitoring.service
+    - llm-exporter.service
+    - gpu-metrics.service
+    - gpu-metrics.timer
+  register: monitoring_systemd_units
+  notify:
+    - Monitoring restart exporter
+    - Monitoring restart containers
+
+- name: Load monitoring units before starting services
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+  when:
+    - monitoring_systemd_units.changed
+    - not ansible_check_mode
+
+- name: Record whether GPU containers need a restart after loading monitoring units
+  ansible.builtin.set_fact:
+    monitoring_systemd_reload_performed: "{{ monitoring_systemd_units.changed and not ansible_check_mode }}"
+
+- name: Validate the rendered monitoring Compose configuration
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - compose
+      - --project-name
+      - llm-monitoring
+      - --file
+      - /etc/llm-monitoring/compose.yml
+      - config
+      - --quiet
+  changed_when: false
+  when: not ansible_check_mode
+
+- name: Inspect pinned monitoring images without their environments
+  ansible.builtin.command:
+    argv: [/usr/bin/docker, image, inspect, --format, "{{ '{{.Id}}' }}", "{{ item }}"]
+  loop:
+    - "{{ monitoring_victoriametrics_image }}"
+    - "{{ monitoring_grafana_image }}"
+    - "{{ monitoring_node_exporter_image }}"
+  register: monitoring_image_states
+  changed_when: false
+  failed_when: monitoring_image_states.rc not in [0, 1]
+  when: not ansible_check_mode
+
+- name: Download missing digest-pinned monitoring images
+  ansible.builtin.command:
+    argv: [/usr/bin/docker, pull, "{{ item.item }}"]
+  loop: "{{ monitoring_image_states.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item }}"
+  async: 900
+  poll: 10
+  changed_when: true
+  when:
+    - not ansible_check_mode
+    - item.rc != 0
+
+- name: Validate VictoriaMetrics scrape configuration before startup
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - run
+      - --rm
+      - --network
+      - none
+      - --read-only
+      - --cap-drop
+      - ALL
+      - --security-opt
+      - no-new-privileges:true
+      - --user
+      - "65534:65534"
+      - --volume
+      - /etc/llm-monitoring:/etc/llm-monitoring:ro
+      - "{{ monitoring_victoriametrics_image }}"
+      - -promscrape.config=/etc/llm-monitoring/scrape.yml
+      - -promscrape.config.dryRun
+      - -loggerLevel=ERROR
+  changed_when: false
+  when: not ansible_check_mode
+
+- name: Apply monitoring configuration before final inference verification
+  ansible.builtin.meta: flush_handlers
+
+- name: Enable monitoring services at boot
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    state: started
+    enabled: true
+  loop: [llm-exporter.service, monitoring.service]
+  when: not ansible_check_mode
+
+- name: Enable GPU collection only on NVIDIA hosts
+  ansible.builtin.systemd_service:
+    name: gpu-metrics.timer
+    enabled: "{{ inference_accelerator | default('nvidia') == 'nvidia' }}"
+    state: "{{ 'started' if inference_accelerator | default('nvidia') == 'nvidia' else 'stopped' }}"
+  when: not ansible_check_mode
+
+- name: Stop any in-flight GPU collection on CPU hosts
+  ansible.builtin.systemd_service:
+    name: gpu-metrics.service
+    state: stopped
+  when:
+    - inference_accelerator | default('nvidia') == 'cpu'
+    - not ansible_check_mode
+
+- name: Remove stale GPU metrics from CPU hosts
+  ansible.builtin.file:
+    path: /var/lib/llm-monitoring/node-textfile/gpu.prom
+    state: absent
+  when: inference_accelerator | default('nvidia') == 'cpu'
+
+- name: Verify local monitoring endpoints
+  ansible.builtin.uri:
+    url: "{{ item }}"
+    method: GET
+    use_proxy: false
+    follow_redirects: none
+    status_code: 200
+    timeout: 10
+  loop:
+    - http://127.0.0.1:8428/health
+    - http://127.0.0.1:3000/grafana/api/health
+    - http://127.0.0.1:9100/metrics
+    - http://127.0.0.1:9400/metrics
+  register: monitoring_readiness
+  until: monitoring_readiness.status == 200
+  retries: 6
+  delay: 5
+  when: not ansible_check_mode

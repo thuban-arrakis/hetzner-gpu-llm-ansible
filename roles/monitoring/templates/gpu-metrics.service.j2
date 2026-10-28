@@ -1,0 +1,23 @@
+[Unit]
+Description=Collect NVIDIA GPU metrics for node_exporter
+
+[Service]
+Type=oneshot
+User=monitoring-exporter
+Group=monitoring-exporter
+ExecStart=/usr/bin/python3 /usr/local/lib/llm-monitoring/gpu_textfile.py --output /var/lib/llm-monitoring/node-textfile/gpu.prom
+TimeoutStartSec=20
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+ReadWritePaths=/var/lib/llm-monitoring/node-textfile
+CapabilityBoundingSet=
+MemoryMax=128M
+CPUQuota=10%
+TasksMax=32
+UMask=0022

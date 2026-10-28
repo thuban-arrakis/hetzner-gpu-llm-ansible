@@ -1,9 +1,15 @@
 {
     admin off
     persist_config off
+{% if monitoring_enabled | default(false) %}
+    metrics
+{% endif %}
     # Direct-IP HTTPS clients normally omit SNI.
     default_sni {{ public_api_address }}
-    servers {
+    servers{% if monitoring_enabled | default(false) %} :443{% endif %} {
+{% if monitoring_enabled | default(false) %}
+        name public_gateway
+{% endif %}
         protocols h1 h2
         max_header_size 16KiB
         timeouts {
@@ -35,6 +41,21 @@ https://{{ public_api_address }} {
         request_body {
             max_size {{ public_api_request_body_bytes }}
         }
+{% if monitoring_enabled | default(false) %}
+        @grafana path /grafana /grafana/*
+        handle @grafana {
+            reverse_proxy 127.0.0.1:3000 {
+                # Only the authenticated gateway chooses the Grafana identity.
+                header_up X-WEBAUTH-USER {{ public_api_username }}
+                header_up -X-WEBAUTH-ROLE
+                header_up -Authorization
+                transport http {
+                    dial_timeout 5s
+                    response_header_timeout 60s
+                }
+            }
+        }
+{% endif %}
         @catalogue {
             method GET
             path /api/tags /v1/models
@@ -67,3 +88,14 @@ https://{{ public_api_address }} {
         respond 404
     }
 }
+{% if monitoring_enabled | default(false) %}
+
+# A metrics-only listener; the Caddy administration API remains disabled.
+http://127.0.0.1:2019 {
+    bind 127.0.0.1
+    route {
+        metrics /metrics
+        respond 404
+    }
+}
+{% endif %}

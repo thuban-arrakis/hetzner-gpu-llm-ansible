@@ -1,4 +1,4 @@
-# GPU LLM on Hetzner
+# LLM deployment and monitoring on Hetzner
 
 Ansible configures an Ubuntu inference server and runs a local Ollama API in
 Docker. NVIDIA GPU mode is the default; an explicitly selected CPU demo mode
@@ -7,24 +7,42 @@ manages an existing GPU server's Robot network firewall.
 GitHub Actions validates the code; a separate manual workflow can run Ansible
 from a protected management runner. Optional Caddy HTTPS exposes inference at
 the server's public IPv4 address with password authentication; no DNS is needed.
+Optional VictoriaMetrics and Grafana provide host, inference, gateway, and GPU
+monitoring through the same authenticated HTTPS endpoint.
 
 **Validation boundary:** static checks cover the automation and gateway behavior.
 The deployment playbook separately verifies real inference on the selected host.
 CPU demo mode does not demonstrate NVIDIA driver installation or GPU inference;
 the default GPU deployment retains those hardware acceptance checks.
 
+The current demo is an Ubuntu 24.04 **ARM CAX21 CPU VM**, with Qwen3 4B Q4,
+2048-token context, one inference at a time, and a 5 GB container memory limit.
+It uses VictoriaMetrics, Grafana, and a public-IP certificate; no NVIDIA driver
+is installed and GPU collection is disabled on this CPU machine. Cloud resources were created
+through the configured provider API and configured with Ansible. Terraform code
+is included and validated, but no Terraform plan/apply created this deployment.
+
+All controller-side demo checkouts, environments, inventories, keys, client
+configuration, and caches belong under **`/tmp`**, outside the home directory.
+On macOS `/tmp` resolves to `/private/tmp`; protected-file checks use that
+canonical path. Server service configuration and data use the standard paths
+documented below. No credential value is committed to Git.
+
 ## Architecture and security boundary
 
 ```mermaid
 flowchart LR
-    C[Authorized operator] -->|SSH key + pinned host key| F[Robot and host firewalls]
-    F --> H[Ubuntu 24.04 GPU server]
+    C[Authorized operator] -->|SSH key + pinned host key| F[Cloud or Robot and host firewalls]
+    F --> H[Ubuntu 24.04 CPU or GPU server]
     H -->|SSH local forwarding| A[127.0.0.1:11434]
     A --> O[Unprivileged Ollama container]
-    O --> G[NVIDIA GPU]
+    O --> G[Explicit CPU mode or NVIDIA GPU]
     O --> V[Persistent model storage]
     P[Optional public IPv4 HTTPS client] -->|TLS + Basic authentication| T[Caddy inference gateway]
     T --> A
+    T -->|Authenticated /grafana/| D[Grafana dashboards and alerts]
+    D --> M[VictoriaMetrics]
+    M --> E[Host, LLM, gateway and optional GPU collectors]
 ```
 
 - The API is **private by default**. Ollama has no built-in API authentication;
@@ -77,17 +95,23 @@ verification or trust an unauthenticated `ssh-keyscan` result by itself.
 
 ## Configure and deploy with Ansible
 
-Create a controller environment and a private local inventory:
+Keep the checkout under `/tmp`. From its root, create a controller environment
+and private inventory outside the checkout, also under `/tmp`:
 
 ```bash
-python3 -m venv .venv
-. .venv/bin/activate
+DEMO_DIR="$(python3 -c 'import pathlib,tempfile; print(pathlib.Path(tempfile.mkdtemp(prefix="llm-demo-", dir="/tmp")).resolve())')"
+export ANSIBLE_HOME="$DEMO_DIR/ansible"
+export ANSIBLE_LOCAL_TEMP="$DEMO_DIR/ansible-tmp"
+export XDG_CACHE_HOME="$DEMO_DIR/cache"
+export TMPDIR="$DEMO_DIR"
+python3 -m venv "$DEMO_DIR/venv"
+. "$DEMO_DIR/venv/bin/activate"
 python -m pip install -r requirements-dev.txt
-cp inventory/example.yml inventory/local.yml
-chmod 600 inventory/local.yml
+cp inventory/example.yml "$DEMO_DIR/inventory.yml"
+chmod 600 "$DEMO_DIR/inventory.yml"
 ```
 
-Edit `inventory/local.yml`:
+Edit the private `$DEMO_DIR/inventory.yml`:
 
 - Replace the documentation IP with your server address.
 - Set the existing SSH account and port. Use `ssh-agent` or your local SSH
@@ -101,15 +125,15 @@ Run syntax validation first. For a fresh driver install, explicitly allow the
 maintenance reboot:
 
 ```bash
-ansible-playbook -i inventory/local.yml playbooks/deploy.yml --syntax-check
-ansible-playbook -i inventory/local.yml playbooks/deploy.yml \
+ansible-playbook -i "$DEMO_DIR/inventory.yml" playbooks/deploy.yml --syntax-check
+ansible-playbook -i "$DEMO_DIR/inventory.yml" playbooks/deploy.yml \
   --extra-vars gpu_host_allow_reboot=true
 ```
 
 Subsequent runs can omit the reboot opt-in when no driver update is needed:
 
 ```bash
-ansible-playbook -i inventory/local.yml playbooks/deploy.yml
+ansible-playbook -i "$DEMO_DIR/inventory.yml" playbooks/deploy.yml
 ```
 
 In its default NVIDIA mode, the playbook rejects CPU-only hosts, installs or verifies the NVIDIA driver,
@@ -132,13 +156,14 @@ Set these variables in the private inventory for a normal CPU VM; the existing
 
 ```yaml
 inference_accelerator: cpu
-ollama_memory_limit: 6g
+ollama_memory_limit: 5g
 ollama_cpu_limit: "4"
 ollama_context_length: 2048
 ollama_parallel_requests: 1
 ```
 
-These limits suit the 4-vCPU/8-GB CAX21 ARM demo and leave memory for the host.
+These limits suit the 4-vCPU/8-GB CAX21 ARM demo and reserve headroom for the host
+and monitoring. VictoriaMetrics and Grafana each have a 512 MB container limit.
 An 8-vCPU/16-GB x86 VM can use `ollama_cpu_limit: "8"` and
 `ollama_memory_limit: 12g`. Keep the context and concurrency modest while
 measuring latency; shared CPU availability changes throughput.
@@ -154,7 +179,7 @@ deployment into CPU mode.
 Run the same playbook without a driver reboot opt-in:
 
 ```bash
-ansible-playbook -i inventory/local.yml playbooks/deploy.yml
+ansible-playbook -i "$DEMO_DIR/inventory.yml" playbooks/deploy.yml
 ```
 
 For public testing, also configure the IP HTTPS options below. A Cloud server
@@ -204,14 +229,14 @@ server address; the documentation address is intentionally rejected:
 
 ```bash
 python scripts/create_api_credentials.py \
-  --directory /absolute/private/llm-client --address 192.0.2.10
+  --directory "$DEMO_DIR/client" --address 192.0.2.10
 ```
 
 The helper generates a random password in process and writes only mode-0600
 `client.curl` and `password.bcrypt` files inside a mode-0700 directory. It never
 prints credential values, accepts passwords on its command line or overwrites
 an existing directory. Set `public_api_password_hash_file` in the private
-inventory to `/absolute/private/llm-client/password.bcrypt`; the default username
+inventory to the absolute `$DEMO_DIR/client/password.bcrypt` path; the default username
 is `llm`. The Ansible lookup checks ownership, parent permissions, symlinks and
 the bcrypt format before use. Hash-bearing template tasks suppress logs/diffs.
 The server stores only the hash, in a root-managed Caddy configuration.
@@ -221,19 +246,21 @@ arguments. `--disable` must be curl's first argument so a local `.curlrc` cannot
 weaken TLS or redirect settings:
 
 ```bash
-curl --disable --config /absolute/private/llm-client/client.curl \
+curl --disable --config "$DEMO_DIR/client/client.curl" \
   --header 'Content-Type: application/json' \
   --data '{"model":"qwen3:4b-q4_K_M","messages":[{"role":"user","content":"Say hello."}],"stream":false,"think":false,"options":{"num_predict":64}}'
 ```
 
-Unauthenticated requests receive HTTP 401. Authenticated clients may call only
+Unauthenticated requests receive HTTP 401. Authenticated inference clients may call
 `GET /api/tags`, `GET /v1/models`, and `POST /api/chat`, `/api/generate`,
 `/v1/chat/completions`, `/v1/completions`; model administration returns 404.
-The gateway strips authorization/cookie headers before forwarding to loopback,
+The gateway strips authorization/cookie headers before forwarding inference requests to loopback,
 limits request bodies to 1 MiB, and bounds response time to five minutes.
 There are no access or prompt logs. This is a single trusted test-client setup:
 Ollama's one-request concurrency and bounded queue are not per-client quotas.
 Add a dedicated quota/rate-limiting gateway or mTLS/OIDC before sharing broadly.
+When monitoring is enabled, `/grafana/` also permits the authenticated dashboard
+application routes and preserves Grafana's cookies.
 
 For rotation, generate a new directory and update the inventory hash reference,
 then rerun Ansible and replace the client's protected file. To close public
@@ -242,6 +269,73 @@ respective configurations; the raw model API stays on loopback throughout.
 Protect/backup Caddy's `/var/lib/caddy` directory, which contains certificate
 private keys and ACME account data. Monitor certificate expiry and renewal
 failures; IP certificates are valid for only about six days.
+
+## VictoriaMetrics and Grafana
+
+Set `monitoring_enabled: true` alongside `public_api_enabled: true` in the
+private inventory, then run the same playbook. Open
+`https://SERVER_IPV4/grafana/` and use the existing HTTPS username/password from
+the protected client configuration. Caddy authenticates the request and supplies
+a fixed identity to Grafana. Grafana trusts only the loopback proxy; anonymous,
+basic, and form login and default-admin creation are disabled. No second public
+port or DNS name is needed.
+
+VictoriaMetrics is the storage and query engine. Its built-in scraper collects
+Prometheus-format metrics every 30 seconds; there is no Prometheus server.
+Grafana uses the Prometheus-compatible datasource protocol to query it.
+
+| Component | Listener | Purpose |
+|---|---|---|
+| VictoriaMetrics | `127.0.0.1:8428` | Scraping, storage, PromQL/MetricsQL queries |
+| Grafana | `127.0.0.1:3000` | Dashboards and alert evaluation behind `/grafana/` |
+| Node exporter | `127.0.0.1:9100` | Host CPU, memory, disk and network |
+| LLM exporter | `127.0.0.1:9400` | Cached model health and bounded inference probes |
+| Caddy metrics | `127.0.0.1:2019` | Gateway counters and latency; admin API remains off |
+
+Five provisioned dashboards cover **Host**, **Inference**, **GPU**, **Gateway**,
+and **Alerts**. Gateway metrics represent proxied API and Grafana traffic,
+not exclusively LLM requests. GPU panels explicitly show CPU mode/no GPU data
+on the demo instead of fabricating zero-valued GPU measurements.
+
+Nineteen Grafana-managed rules cover scrape failures, CPU/memory/disk pressure,
+LLM availability and probe failures/freshness/latency, and GPU collection,
+temperature and VRAM pressure. Rule definitions live in
+`roles/monitoring/files/grafana-alerts.yml`. The Alerts dashboard shows actual
+Grafana firing/pending states. Notifications are deliberately muted by the
+provisioned local-only policy; SMTP is disabled and no external destination is
+configured. Add an approved contact point and change that policy before relying
+on notification delivery.
+
+The LLM collector polls `/api/tags` and `/api/ps` every 30 seconds and performs
+an eight-token synthetic inference every five minutes. It uses the configured
+context length, keeps the model warm for five minutes, and may consume a small
+amount of inference capacity. Scraping does not trigger generation. Latency,
+token rate, counters and failures from this collector describe **synthetic
+probes**, not all user requests. Prompts and responses are never logged or used
+as labels. Each probe has a hard deadline, and probes of the same type cannot
+overlap.
+
+On NVIDIA hosts, a timer writes utilization, VRAM, temperature, power and
+collection-health metrics from `nvidia-smi` into node exporter's textfile
+directory. On CPU hosts the timer is disabled and stale GPU metrics are removed.
+This is not DCGM-level ECC/Xid or multi-GPU interconnect instrumentation.
+
+Metrics and Grafana state persist under `/var/lib/llm-monitoring`; configuration
+is under `/etc/llm-monitoring`. VictoriaMetrics retains three days of data;
+retention cleanup is asynchronous and is not a hard disk-size cap. Containers
+run without root or the Docker socket. Grafana's signing key is generated on the
+server, stored with owner-only permissions, and never returned to Ansible.
+
+```bash
+sudo systemctl status monitoring.service llm-exporter.service
+sudo docker compose --project-name llm-monitoring \
+  --file /etc/llm-monitoring/compose.yml ps
+curl --fail --silent http://127.0.0.1:8428/health
+```
+
+This monitoring stack shares the inference host. It cannot notify about a total
+host/Grafana outage when its own evaluator is unavailable; production monitoring
+needs an independent observer and notification delivery.
 
 ## Startup, health, and recovery
 
@@ -278,7 +372,13 @@ sudo systemctl stop ollama.service
 Do not enable verbose request/prompt logging in a shared log sink. The watchdog
 emits only fixed event names, not model responses or container logs.
 
-## Terraform: dedicated-server network policy
+## Terraform: Cloud and dedicated-server configurations
+
+[`terraform/cloud`](terraform/cloud/README.md) describes the CPU demo's CAX21,
+IPv4, SSH key and stateful firewall. It also includes the public SSH fingerprint
+console banner used to verify the host without disabling host-key checking.
+Import existing API-created resources before adopting them into Terraform;
+applying a fresh state would create additional resources.
 
 See [terraform/README.md](terraform/README.md) for variables, provider scope,
 authentication boundaries, and rules. The configuration:
@@ -298,7 +398,7 @@ the generated inventory be exported:
 
 ```bash
 umask 077
-terraform -chdir=terraform output -raw ansible_inventory_yaml > inventory/local.auto.yml
+terraform -chdir=terraform output -raw ansible_inventory_yaml > "$DEMO_DIR/inventory.yml"
 ```
 
 Alternatively use the manual Ansible inventory without Terraform. Local
@@ -312,15 +412,16 @@ The inspected `hetzner-api` Keychain profile targets the **Hetzner Cloud API**;
 it cannot authenticate the **Robot API** used by dedicated GEX servers. Its
 Cloud token must not be reused as a Robot password or sent to a different API.
 
-A future Terraform run requires an approved secret-store integration to inject
+An authenticated Robot Terraform run requires an approved secret-store integration to inject
 `HETZNER_ROBOT_USERNAME` and `HETZNER_ROBOT_PASSWORD` into the provider process.
 The checked-in provider block intentionally contains no credentials. Do not
 paste credentials into commands/chat, commit them in tfvars, export Terraform
-debug logs, or modify the Keychain routing policy as a shortcut. No Robot
-credential was requested or created for this code-only submission.
+debug logs, or modify the Keychain routing policy as a shortcut. Cloud provider
+authentication is separate. The deployed Cloud demo used the approved API
+transport; provider credentials were not extracted into Terraform or the repo.
 
 Ansible uses the controller's SSH agent and verified `known_hosts`; private keys
-stay outside the repository. Use protected, encrypted remote Terraform state
+stay outside the repository under the private `/tmp` demo directory. Use protected, encrypted remote Terraform state
 with locking for team operation, and restrict state access even though the
 current resources do not intentionally store passwords in state.
 
@@ -350,13 +451,15 @@ be billable according to the account's GitHub plan.
 ## Local validation
 
 ```bash
-. .venv/bin/activate
+. "$DEMO_DIR/venv/bin/activate"
 ansible-playbook -i inventory/example.yml playbooks/deploy.yml --syntax-check
 ansible-lint
-python -m pytest -q
+TMPDIR="$DEMO_DIR" python -m pytest -q --basetemp="$DEMO_DIR/pytest"
 terraform -chdir=terraform fmt -check -recursive
 terraform -chdir=terraform init -backend=false -input=false -lockfile=readonly
 terraform -chdir=terraform validate
+terraform -chdir=terraform/cloud init -backend=false -input=false -lockfile=readonly
+terraform -chdir=terraform/cloud validate
 ```
 
 The Compose schema test needs the Docker Compose v2 CLI, not a running GPU or
@@ -371,6 +474,8 @@ The gateway tests need Caddy 2.11.7 available as `caddy` or via the
 They exercise no-SNI IP TLS with an ephemeral, locally trusted test certificate,
 authentication and denial of administrative routes; they do not request a live
 Let's Encrypt certificate or contact any public model endpoint.
+Monitoring tests cover Compose isolation, GPU textfile failure handling,
+protected Grafana key files, and LLM probe timeouts/overlap/metrics behavior.
 
 ## Configuration and improvements
 
@@ -382,11 +487,11 @@ deployment. Never set a mutable `latest` image for unattended inference.
 
 For a larger deployment:
 
-- Add NVIDIA DCGM Exporter, Prometheus, and Grafana on a private monitoring
-  network. Alert on GPU temperature, ECC/Xid errors, memory pressure, failed
-  inference, queue depth, and watchdog recovery limits. Keep metrics private.
-- Put a separately authenticated TLS gateway in front of the API for application
-  clients. Use mTLS or OIDC, per-client quotas, request/context limits, and rate
+- Extend GPU telemetry with NVIDIA DCGM Exporter for ECC/Xid and multi-GPU
+  diagnostics, and move VictoriaMetrics/alert evaluation to an independent host.
+  Configure notification delivery and monitor certificate expiry externally.
+- Extend the authenticated TLS gateway for application clients with mTLS or
+  OIDC, per-client quotas, request/context limits, and rate
   limiting. Expose inference routes only; keep model pull/delete administration
   private. Do not simply publish Ollama's raw port.
 - Use vLLM when continuous batching and multi-GPU throughput justify its greater
@@ -411,3 +516,6 @@ For a larger deployment:
 - [Pinned Robot provider](https://github.com/futo-org/terraform-provider-hetzner/tree/v1.1.0)
 - [Caddy TLS issuer and ACME profile configuration](https://caddyserver.com/docs/caddyfile/directives/tls)
 - [Let's Encrypt IP certificates and short-lived certificate availability](https://letsencrypt.org/2026/01/15/6day-and-ip-general-availability/)
+- [VictoriaMetrics single-server operation](https://docs.victoriametrics.com/victoriametrics/single-server-victoriametrics/)
+- [Grafana auth proxy](https://grafana.com/docs/grafana/latest/setup-grafana/configure-access/configure-authentication/auth-proxy/)
+- [Grafana alerting file provisioning](https://grafana.com/docs/grafana/latest/alerting/set-up/provision-alerting-resources/file-provisioning/)

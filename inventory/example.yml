@@ -5,10 +5,13 @@ gpu_servers:
       ansible_host: 192.0.2.10
       ansible_user: root
       ansible_port: 22
-      # Use ssh-agent or ~/.ssh/config. Never put private keys/passwords here.
+      # Use ssh-agent or protected key/known_hosts references under /tmp.
+      # Never put private key contents or passwords in this inventory.
   vars:
     # Replace with your controller's PUBLIC IPv4 address or approved VPN range.
     server_security_admin_cidrs:
       - 198.51.100.10/32
     # Explicitly opt in to the first driver-install reboot during maintenance.
     gpu_host_allow_reboot: false
+    # Optional VictoriaMetrics/Grafana; requires configured public HTTPS auth.
+    monitoring_enabled: false
