@@ -10,6 +10,11 @@
       - monitoring_victoriametrics_memory is match('^[1-9][0-9]*[gmGM]$')
       - monitoring_victoriametrics_cache_memory is match('^[1-9][0-9]*MiB$')
       - monitoring_grafana_memory is match('^[1-9][0-9]*[gmGM]$')
+      - monitoring_grafana_go_memory_limit is match('^[1-9][0-9]*MiB$')
+      - >-
+        monitoring_grafana_go_memory_limit | regex_replace('MiB$', '') | int
+        < (monitoring_grafana_memory | regex_replace('[gmGM]$', '') | int)
+        * (1024 if monitoring_grafana_memory[-1] | lower == 'g' else 1)
       - monitoring_retention_time is match('^[1-9][0-9]*[hd]$')
       - monitoring_scrape_interval is match('^[1-9][0-9]*s$')
       - monitoring_health_interval_seconds | int >= 15

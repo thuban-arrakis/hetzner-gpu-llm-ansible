@@ -48,6 +48,7 @@ services:
     cpus: "1.0"
     pids_limit: 256
     environment:
+      GOMEMLIMIT: {{ monitoring_grafana_go_memory_limit | to_json }}
       GF_SERVER_HTTP_ADDR: 127.0.0.1
       GF_SERVER_HTTP_PORT: "3000"
       GF_SERVER_ROOT_URL: {{ ('https://' ~ public_api_address ~ '/grafana/') | to_json }}

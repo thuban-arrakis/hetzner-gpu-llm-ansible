@@ -176,8 +176,14 @@ ollama_context_length: 2048
 ollama_parallel_requests: 1
 ```
 
-These limits suit the 4-vCPU/8-GB CAX21 ARM demo and reserve headroom for the host
-and monitoring. VictoriaMetrics and Grafana each have a 512 MB container limit.
+These limits suit the 4-vCPU/8-GB CAX21 ARM demo. VictoriaMetrics has a 512 MiB
+container limit; Grafana defaults to a 1 GiB hard limit with a 768 MiB Go runtime
+memory target. Configure these together with `monitoring_grafana_memory` and
+`monitoring_grafana_go_memory_limit`, keeping the runtime target below the hard
+cap. The former 512 MiB Grafana cap caused confirmed OOM restarts and HTTP 502s
+during dashboard loading. The 5 GiB Ollama cap, monitoring containers and guard
+sum to about 6.75 GiB of limits; reserve the remaining host memory for the OS,
+Caddy and the deployment runner, and measure peak usage during cold loads.
 An 8-vCPU/16-GB x86 VM can use `ollama_cpu_limit: "8"` and
 `ollama_memory_limit: 12g`. Keep the context and concurrency modest while
 measuring latency; shared CPU availability changes throughput.
