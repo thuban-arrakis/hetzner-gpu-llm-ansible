@@ -5,7 +5,7 @@ gpu_servers:
       ansible_host: 192.0.2.10
       ansible_user: root
       ansible_port: 22
-      # Use ssh-agent or protected key/known_hosts references under /tmp.
+      # Use ssh-agent or protected key/known_hosts references outside the repo.
       # Never put private key contents or passwords in this inventory.
   vars:
     # Replace with your controller's PUBLIC IPv4 address or approved VPN range.

@@ -123,6 +123,7 @@ services:
       - --path.procfs=/host/proc
       - --path.sysfs=/host/sys
       - --collector.textfile.directory=/textfile
+      - --collector.textfile.directory=/kernel-textfile
       - --collector.filesystem.mount-points-exclude=^/(dev|proc|sys|var/lib/docker/.+|var/lib/containers/storage/.+)($|/)
       - --no-collector.wifi
       - --no-collector.hwmon
@@ -130,6 +131,7 @@ services:
     volumes:
       - /:/host:ro,rslave
       - /var/lib/llm-monitoring/node-textfile:/textfile:ro
+      - /var/lib/llm-monitoring/kernel-textfile:/kernel-textfile:ro
     healthcheck:
       test: [CMD, wget, --spider, -q, "http://127.0.0.1:9100/"]
       interval: 30s

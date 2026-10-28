@@ -1,0 +1,15 @@
+{
+  "api_url": {{ ('http://127.0.0.1:' ~ ollama_port | string) | to_json }},
+  "model": {{ ollama_model | to_json }},
+  "require_gpu": {{ (inference_accelerator | default('nvidia') == 'nvidia') | to_json }},
+  "context_length": {{ ollama_context_length | int }},
+  "parallel_requests": {{ ollama_parallel_requests | int }},
+  "predict_tokens": {{ ollama_acceptance_predict_tokens | int }},
+  "timeout": {{ ollama_acceptance_timeout | int }},
+  "prompt": {{ ollama_acceptance_prompt | to_json }},
+  "min_context_fraction": {{ ollama_acceptance_min_context_fraction | float }},
+  "gpu_offload_policy": {{ ollama_gpu_offload_policy | to_json }},
+  "gpu_min_vram_fraction": {{ ollama_gpu_min_vram_fraction | float }},
+  "gpu_headroom_mib": {{ ollama_gpu_memory_headroom_mib | int }},
+  "gpu_device_uuids": {{ ollama_gpu_device_uuids | to_json }}
+}

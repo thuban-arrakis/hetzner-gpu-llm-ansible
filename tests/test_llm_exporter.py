@@ -6,11 +6,12 @@ from pathlib import Path
 
 import pytest
 
-from conftest import load_module
+from conftest import ROOT, load_module
 
 
 @pytest.fixture
-def exporter_module():
+def exporter_module(monkeypatch):
+    monkeypatch.syspath_prepend(str(ROOT / "roles" / "ollama" / "files"))
     return load_module("llm_exporter", "roles/monitoring/files/llm_exporter.py")
 
 
@@ -21,6 +22,11 @@ def exporter_config(exporter_module):
 
 def health_result():
     return {"available": 1, "loaded": 1, "resident_bytes": 3000, "vram_bytes": 0, "cpu_bytes": 3000}
+
+
+def inference_result(**overrides):
+    return {"output_tokens": 2, "tokens_per_second": 4, "gpu_check_success": 0, "gpu_policy_satisfied": 0,
+            "loaded": 0, "resident_bytes": 0, "vram_bytes": 0, **overrides}
 
 
 def test_health_records_only_configured_model_memory(exporter_module, exporter_config):
@@ -53,7 +59,7 @@ def test_synthetic_request_has_small_fixed_budget_and_discards_text(exporter_mod
         return {"response": "untrusted-generated-content", "done": True, "eval_count": 2, "eval_duration": 500_000_000}
 
     result = exporter_module.collect_inference(exporter_config, request)
-    assert result == {"output_tokens": 2, "tokens_per_second": 4}
+    assert result == inference_result()
     assert requests[0][0] == "/api/generate"
     assert requests[0][1]["options"] == {"num_predict": 8, "num_ctx": 2048, "temperature": 0}
     assert requests[0][1]["stream"] is False
@@ -76,7 +82,7 @@ def test_timeout_preserves_last_success_and_clears_current_readings(exporter_mod
     def timeout(_):
         raise subprocess.TimeoutExpired("fixed-probe", 120)
 
-    exporter = exporter_module.Exporter(exporter_config, runner=lambda _: {"output_tokens": 2, "tokens_per_second": 4},
+    exporter = exporter_module.Exporter(exporter_config, runner=lambda _: inference_result(),
                                        clock=lambda: 100)
     exporter.run_probe("inference")
     exporter.runner = timeout
@@ -109,7 +115,7 @@ def test_scrapes_use_cached_metrics_and_inference_never_overlaps(exporter_module
         calls.append(kind)
         started.set()
         finish.wait(timeout=5)
-        return {"output_tokens": 2, "tokens_per_second": 4}
+        return inference_result()
 
     exporter = exporter_module.Exporter(exporter_config, runner=runner)
     worker = threading.Thread(target=exporter.run_probe, args=("inference",))
@@ -158,6 +164,9 @@ def test_only_static_info_labels_are_exposed(exporter_module, exporter_config):
     {"context_length": 0},
     {"context_length": 131072},
     {"unknown": "arbitrary"},
+    {"gpu_offload_policy": "automatic"},
+    {"gpu_min_vram_fraction": 0},
+    {"gpu_min_vram_fraction": True},
 ])
 def test_unsafe_or_excessive_probe_configuration_is_rejected(exporter_module, setting):
     with pytest.raises(ValueError):
@@ -203,3 +212,78 @@ def test_probe_context_matches_the_configured_service(exporter_module, exporter_
     exporter_module.collect_inference(exporter_config, request)
     assert requests[0]["options"]["num_ctx"] == 4096
     assert requests[0]["options"]["num_predict"] == 8
+
+
+@pytest.mark.parametrize("models,policy,minimum,known,okay", [
+    ([{"name": "qwen3:4b-q4_K_M", "size": 3000, "size_vram": 3000}], "full", 0.5, 1, 1),
+    ([{"name": "qwen3:4b-q4_K_M", "size": 3000, "size_vram": 2999}], "full", 0.5, 1, 0),
+    ([{"name": "qwen3:4b-q4_K_M", "size": 3000, "size_vram": 1500}], "partial", 0.5, 1, 1),
+    ([{"name": "qwen3:4b-q4_K_M", "size": 3000, "size_vram": 1499}], "partial", 0.5, 1, 0),
+    ([{"name": "qwen3:4b-q4_K_M", "size": 3000, "size_vram": 0}], "full", 0.5, 1, 0),
+    ([], "full", 0.5, 1, 0),
+    ([{"name": "qwen3:4b-q4_K_M", "size": 3000}], "full", 0.5, 0, 0),
+    ([{"name": "qwen3:4b-q4_K_M", "size": 3000, "size_vram": 3001}], "full", 0.5, 0, 0),
+])
+def test_gpu_probe_checks_residency_after_generation(exporter_module, exporter_config, models, policy, minimum, known, okay):
+    exporter_config.update(accelerator="nvidia", gpu_offload_policy=policy, gpu_min_vram_fraction=minimum)
+    calls = []
+    def request(config, path, body=None):
+        calls.append(path)
+        if path == "/api/generate":
+            assert body["keep_alive"] == "5m"
+            return {"response": "ok", "done": True, "eval_count": 2, "eval_duration": 500_000_000}
+        return {"models": models}
+    result = exporter_module.collect_inference(exporter_config, request)
+    assert calls == ["/api/generate", "/api/ps"]
+    assert result["gpu_check_success"] == known
+    assert result["gpu_policy_satisfied"] == okay
+    assert result["output_tokens"] == 2
+
+
+def test_idle_health_unload_does_not_erase_post_inference_gpu_acceptance(exporter_module, exporter_config):
+    exporter_config["accelerator"] = "nvidia"
+    exporter = exporter_module.Exporter(exporter_config, runner=lambda _: inference_result(
+        gpu_check_success=1, gpu_policy_satisfied=1, loaded=1, resident_bytes=3000, vram_bytes=3000,
+    ), clock=lambda: 100)
+    exporter.run_probe("inference")
+    exporter.runner = lambda _: {"available": 1, "loaded": 0, "resident_bytes": 0, "vram_bytes": 0, "cpu_bytes": 0}
+    exporter.run_probe("health")
+    assert exporter.metrics["llm_model_loaded"] == 0
+    assert exporter.metrics["llm_inference_gpu_policy_satisfied"] == 1
+    assert exporter.metrics["llm_inference_model_gpu_fraction"] == 1
+    assert exporter.metrics["llm_inference_gpu_check_timestamp_seconds"] == 100
+
+
+def test_failed_residency_query_preserves_generation_success_but_reports_unknown(exporter_module, exporter_config):
+    exporter_config["accelerator"] = "nvidia"
+    def request(config, path, body=None):
+        if path == "/api/ps":
+            raise TimeoutError("untrusted API response")
+        return {"response": "ok", "done": True, "eval_count": 2, "eval_duration": 500_000_000}
+    result = exporter_module.collect_inference(exporter_config, request)
+    exporter = exporter_module.Exporter(exporter_config, runner=lambda _: result)
+    exporter.run_probe("inference")
+    assert exporter.metrics["llm_inference_probe_success"] == 1
+    assert exporter.metrics["llm_inference_gpu_check_success"] == 0
+    assert math.isnan(exporter.metrics["llm_inference_gpu_policy_satisfied"])
+    assert math.isnan(exporter.metrics["llm_inference_model_vram_bytes"])
+    assert b"untrusted" not in exporter.render()
+
+
+def test_cpu_probe_never_requires_gpu_measurements(exporter_module, exporter_config):
+    exporter = exporter_module.Exporter(exporter_config, runner=lambda _: inference_result())
+    exporter.run_probe("inference")
+    assert exporter.metrics["llm_inference_probe_success"] == 1
+    assert math.isnan(exporter.metrics["llm_inference_gpu_policy_satisfied"])
+    assert exporter.metrics["llm_inference_gpu_check_timestamp_seconds"] == 0
+
+
+def test_gpu_child_deadline_includes_followup_residency_request(exporter_module, exporter_config, monkeypatch):
+    exporter_config["accelerator"] = "nvidia"
+    calls = []
+    def run(args, **kwargs):
+        calls.append(kwargs["timeout"])
+        raise subprocess.TimeoutExpired("probe", kwargs["timeout"])
+    monkeypatch.setattr(exporter_module.subprocess, "run", run)
+    exporter_module.Exporter(exporter_config, config_path="/etc/llm-monitoring/llm-exporter.json").run_probe("inference")
+    assert calls == [132]

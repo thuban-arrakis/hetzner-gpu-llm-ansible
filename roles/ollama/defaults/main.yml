@@ -16,6 +16,19 @@ ollama_context_length: 4096
 ollama_parallel_requests: 1
 ollama_max_queue: 16
 ollama_keep_alive: 5m
+# Empty selects all GPUs; use stable full GPU UUIDs to dedicate a subset.
+ollama_gpu_device_uuids: []
+# Full means Ollama reports size_vram == size; partial is an explicit opt-in.
+ollama_gpu_offload_policy: full
+ollama_gpu_min_vram_fraction: 0.5
+# Per selected GPU, both allocator reservation and measured acceptance floor.
+ollama_gpu_memory_headroom_mib: 512
+# GPU acceptance sends this many parallel requests: ollama_parallel_requests.
+# Empty prompt generates a capacity payload close to the configured context.
+ollama_acceptance_prompt: ""
+ollama_acceptance_min_context_fraction: 0.75
+ollama_acceptance_predict_tokens: 64
+ollama_acceptance_timeout: 600
 ollama_memory_limit: 16g
 ollama_cpu_limit: "8"
 ollama_startup_timeout: 180

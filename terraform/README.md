@@ -74,8 +74,8 @@ README. No DNS record is required. Port 80 is for ACME/HTTPS redirects, never
 plaintext API requests. TLS private keys are created on the server by Caddy and
 never pass through Terraform state.
 
-Ollama always binds to `127.0.0.1:11434`; it is reached through the authenticated
-gateway or SSH tunnel described in the main README. The host's stateful firewall is still required because a stateless
+Ollama always binds to `127.0.0.1:11434`; public clients use the authenticated
+HTTPS gateway described in the main README. The host's stateful firewall is still required because a stateless
 reply rule does not prove that a packet belongs to an established connection.
 Review these rules if customizing connection tracking, source ports, or network services.
 

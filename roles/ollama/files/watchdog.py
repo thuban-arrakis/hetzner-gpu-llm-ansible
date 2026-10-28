@@ -14,6 +14,7 @@ import re
 import subprocess
 import sys
 import time
+from gpu_residency import evaluate_residency
 from urllib.parse import urlsplit
 from urllib.request import ProxyHandler, build_opener
 
@@ -54,6 +55,8 @@ def validate_config(config):
     # Old configurations retain GPU checks. Only an explicit JSON false opts out.
     if type(config.get("require_gpu", True)) is not bool:
         raise ValueError("require_gpu must be a boolean")
+    evaluate_residency([], config["model"], config.get("gpu_offload_policy", "full"),
+                       config.get("gpu_min_vram_fraction", 0.5))
     for key in (
         "failure_threshold", "restart_cooldown", "restart_limit",
         "restart_window", "startup_timeout",
@@ -117,7 +120,25 @@ def _probe_health(config):
         if not isinstance(models, list):
             return "unhealthy"
         names = {item.get("name") for item in models if isinstance(item, dict)}
-        return "healthy" if config["model"] in names else "missing_model"
+        if config["model"] not in names:
+            return "missing_model"
+        if config.get("require_gpu", True):
+            with opener.open(config["api_url"] + "/api/ps", timeout=10) as response:
+                if response.status != 200:
+                    return "unhealthy"
+                body = response.read(MAX_RESPONSE_BYTES + 1)
+            if len(body) > MAX_RESPONSE_BYTES:
+                return "unhealthy"
+            placement = evaluate_residency(
+                json.loads(body)["models"], config["model"],
+                config.get("gpu_offload_policy", "full"),
+                config.get("gpu_min_vram_fraction", 0.5),
+            )
+            # Loaded CPU fallback violates policy even when NVML still works.
+            # A model unloaded by keep_alive is healthy and is not force-warmed.
+            if placement == "violation":
+                return "unhealthy"
+        return "healthy"
     except (OSError, ValueError, KeyError, TypeError):
         return "unhealthy"
 

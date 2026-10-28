@@ -63,6 +63,58 @@
     group: root
     mode: '0755'
 
+- name: Inspect the NVIDIA runtime configuration before selecting CDI
+  ansible.builtin.stat:
+    path: /etc/nvidia-container-runtime/config.toml
+    follow: false
+    checksum_algorithm: sha256
+  register: gpu_host_runtime_before
+
+- name: Refuse an unexpected NVIDIA runtime configuration target
+  ansible.builtin.assert:
+    that:
+      - >-
+        not gpu_host_runtime_before.stat.exists or
+        (gpu_host_runtime_before.stat.isreg and not gpu_host_runtime_before.stat.islnk and
+         gpu_host_runtime_before.stat.uid == 0)
+    fail_msg: NVIDIA runtime config.toml must be a regular root-owned file, not a symlink.
+
+# The Compose service explicitly selects runtime=nvidia. JIT-CDI modifies the
+# OCI device configuration before runc, avoiding the legacy prestart-hook path
+# that can lose GPU access after systemd daemon-reload. It needs no cached CDI
+# specification, including after driver upgrades or a reboot.
+# https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/cdi-support.html
+- name: Select JIT-CDI while preserving other NVIDIA runtime settings
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/nvidia-ctk
+      - config
+      - --in-place
+      - --set
+      - nvidia-container-runtime.mode=jit-cdi
+  changed_when: false
+  when: not ansible_check_mode
+
+- name: Inspect the NVIDIA runtime configuration after selecting CDI
+  ansible.builtin.stat:
+    path: /etc/nvidia-container-runtime/config.toml
+    checksum_algorithm: sha256
+  register: gpu_host_runtime_after
+
+- name: Verify that NVIDIA device injection uses JIT-CDI
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/python3
+      - -c
+      - |
+        import tomllib
+        with open('/etc/nvidia-container-runtime/config.toml', 'rb') as config:
+            mode = tomllib.load(config).get('nvidia-container-runtime', {}).get('mode')
+        if mode != 'jit-cdi':
+            raise SystemExit('NVIDIA runtime must use JIT-CDI device injection')
+  changed_when: false
+  when: not ansible_check_mode
+
 - name: Inspect Docker configuration before runtime registration
   ansible.builtin.stat:
     path: /etc/docker/daemon.json
@@ -103,7 +155,35 @@
     gpu_host_docker_after.stat.checksum | default('')
   notify: Gpu host restart Docker
 
+- name: Record whether managed GPU containers need recreation
+  ansible.builtin.set_fact:
+    gpu_host_runtime_configuration_changed: >-
+      {{
+        gpu_host_runtime_before.stat.checksum | default('') !=
+        gpu_host_runtime_after.stat.checksum | default('') or
+        gpu_host_docker_before.stat.checksum | default('') !=
+        gpu_host_docker_after.stat.checksum | default('')
+      }}
+
 - name: Start and verify Docker after NVIDIA runtime registration
   ansible.builtin.include_role:
     name: docker_engine
     tasks_from: start
+
+- name: Inspect registered Docker runtimes
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - info
+      - --format
+      - "{{ '{{json .Runtimes}}' }}"
+  register: gpu_host_registered_runtimes
+  changed_when: false
+  when: not ansible_check_mode
+
+- name: Require the NVIDIA runtime used by the GPU service
+  ansible.builtin.assert:
+    that:
+      - "'nvidia' in (gpu_host_registered_runtimes.stdout | from_json)"
+    fail_msg: Docker did not load the NVIDIA runtime required by the GPU Compose service.
+  when: not ansible_check_mode

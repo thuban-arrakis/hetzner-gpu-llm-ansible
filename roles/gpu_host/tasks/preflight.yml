@@ -11,9 +11,11 @@
       - gpu_host_driver_package is match('^$|^nvidia-driver-[0-9]+(-server)?(-open)?$')
       - gpu_host_min_driver_version is match('^[0-9]+\.[0-9]+(\.[0-9]+)?$')
       - gpu_host_container_toolkit_version is match('^[0-9]+\.[0-9]+\.[0-9]+-[0-9]+$')
+      - gpu_host_container_toolkit_version.split('-')[0] is version('1.19.0', '>=')
     fail_msg: >-
       Use a dedicated Ubuntu 24.04 amd64 GPU host with valid role variables.
       A regular Hetzner Cloud CPU instance cannot satisfy the NVIDIA requirement.
+      Container Toolkit 1.19.0 or newer is required for JIT-CDI and non-root device groups.
 
 - name: Read NVIDIA display and compute PCI devices
   ansible.builtin.command:

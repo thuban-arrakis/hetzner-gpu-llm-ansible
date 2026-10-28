@@ -4,6 +4,8 @@
   "model": {{ ollama_model | to_json }},
   "api_url": {{ ('http://127.0.0.1:' ~ ollama_port | string) | to_json }},
   "require_gpu": {{ (inference_accelerator | default('nvidia') == 'nvidia') | to_json }},
+  "gpu_offload_policy": {{ ollama_gpu_offload_policy | to_json }},
+  "gpu_min_vram_fraction": {{ ollama_gpu_min_vram_fraction | float }},
   "failure_threshold": {{ ollama_watchdog_failures | int }},
   "restart_cooldown": {{ ollama_watchdog_restart_cooldown | int }},
   "restart_limit": {{ ollama_watchdog_restart_limit | int }},

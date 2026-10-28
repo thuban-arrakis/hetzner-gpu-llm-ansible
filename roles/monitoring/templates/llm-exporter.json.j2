@@ -4,6 +4,8 @@
   'listen_port': 9400,
   'model': ollama_model,
   'accelerator': inference_accelerator | default('nvidia'),
+  'gpu_offload_policy': ollama_gpu_offload_policy | default('full'),
+  'gpu_min_vram_fraction': ollama_gpu_min_vram_fraction | default(0.5) | float,
   'context_length': ollama_context_length | default(2048) | int,
   'health_interval_seconds': monitoring_health_interval_seconds | int,
   'inference_interval_seconds': monitoring_inference_interval_seconds | int,

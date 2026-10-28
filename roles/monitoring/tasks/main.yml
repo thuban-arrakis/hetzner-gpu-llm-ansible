@@ -60,6 +60,7 @@
     - /etc/llm-monitoring/grafana/dashboards
     - /usr/local/lib/llm-monitoring
     - /var/lib/llm-monitoring
+    - /var/lib/llm-monitoring/kernel-textfile
 
 - name: Create persistent data directories with container ownership
   ansible.builtin.file:
@@ -152,7 +153,16 @@
     owner: root
     group: root
     mode: "0755"
-  loop: [llm_exporter, gpu_textfile]
+  loop: [llm_exporter, gpu_textfile, gpu_xid_textfile]
+  notify: Monitoring restart exporter
+
+- name: Install the shared Ollama GPU placement policy
+  ansible.builtin.copy:
+    src: "{{ role_path }}/../ollama/files/gpu_residency.py"
+    dest: /usr/local/lib/llm-monitoring/gpu_residency.py
+    owner: root
+    group: root
+    mode: "0644"
   notify: Monitoring restart exporter
 
 - name: Configure the local LLM synthetic metrics collector
@@ -176,6 +186,8 @@
     - llm-exporter.service
     - gpu-metrics.service
     - gpu-metrics.timer
+    - gpu-xid.service
+    - gpu-xid.timer
   register: monitoring_systemd_units
   notify:
     - Monitoring restart exporter
@@ -268,24 +280,50 @@
 
 - name: Enable GPU collection only on NVIDIA hosts
   ansible.builtin.systemd_service:
-    name: gpu-metrics.timer
+    name: "{{ item }}"
     enabled: "{{ inference_accelerator | default('nvidia') == 'nvidia' }}"
     state: "{{ 'started' if inference_accelerator | default('nvidia') == 'nvidia' else 'stopped' }}"
+  loop: [gpu-metrics.timer, gpu-xid.timer]
   when: not ansible_check_mode
 
 - name: Stop any in-flight GPU collection on CPU hosts
   ansible.builtin.systemd_service:
-    name: gpu-metrics.service
+    name: "{{ item }}"
     state: stopped
+  loop: [gpu-metrics.service, gpu-xid.service]
   when:
     - inference_accelerator | default('nvidia') == 'cpu'
     - not ansible_check_mode
 
 - name: Remove stale GPU metrics from CPU hosts
   ansible.builtin.file:
-    path: /var/lib/llm-monitoring/node-textfile/gpu.prom
+    path: "{{ item }}"
     state: absent
+  loop:
+    - /var/lib/llm-monitoring/node-textfile/gpu.prom
+    - /var/lib/llm-monitoring/kernel-textfile/gpu-xid.prom
   when: inference_accelerator | default('nvidia') == 'cpu'
+
+- name: Collect GPU metrics once before accepting NVIDIA monitoring
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    state: started
+  loop: [gpu-metrics.service, gpu-xid.service]
+  when:
+    - inference_accelerator | default('nvidia') == 'nvidia'
+    - not ansible_check_mode
+
+- name: Verify the host collector can read core NVIDIA device measurements
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/grep
+      - --quiet
+      - '^llm_gpu_collection_success 1$'
+      - /var/lib/llm-monitoring/node-textfile/gpu.prom
+  changed_when: false
+  when:
+    - inference_accelerator | default('nvidia') == 'nvidia'
+    - not ansible_check_mode
 
 - name: Verify local monitoring endpoints
   ansible.builtin.uri:

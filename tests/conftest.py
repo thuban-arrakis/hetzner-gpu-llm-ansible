@@ -15,7 +15,8 @@ def load_module(name, relative):
 
 
 @pytest.fixture
-def watchdog():
+def watchdog(monkeypatch):
+    monkeypatch.syspath_prepend(str(ROOT / "roles/ollama/files"))
     return load_module("watchdog", "roles/ollama/files/watchdog.py")
 
 

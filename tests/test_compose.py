@@ -31,13 +31,35 @@ def test_compose_configuration_passes_docker_schema_validation(tmp_path, acceler
     assert result.returncode == 0, result.stderr
 
 
-def test_cpu_mode_omits_device_reservations_and_gpu_mode_retains_them():
+def test_gpu_uses_explicit_nvidia_runtime_and_cpu_hides_all_devices():
     renderer = load_module("compose_renderer", "scripts/render_compose.py")
     gpu = yaml.safe_load(renderer.render(ROOT))["services"]["ollama"]
     cpu = yaml.safe_load(renderer.render(ROOT, "cpu"))["services"]["ollama"]
-    assert gpu["deploy"]["resources"]["reservations"]["devices"][0]["driver"] == "nvidia"
+    assert gpu["runtime"] == "nvidia"
+    assert gpu["environment"]["NVIDIA_VISIBLE_DEVICES"] == "all"
+    assert "deploy" not in gpu
+    assert gpu["environment"]["OLLAMA_GPU_OVERHEAD"] == str(512 * 1048576)
+    assert "runtime" not in cpu
     assert "deploy" not in cpu
     assert "NVIDIA_DRIVER_CAPABILITIES" not in cpu["environment"]
+    assert cpu["environment"]["NVIDIA_VISIBLE_DEVICES"] == "void"
     assert cpu["environment"]["CUDA_VISIBLE_DEVICES"] == "-1"
     assert cpu["environment"]["OLLAMA_VULKAN"] == "0"
     assert cpu["ports"] == gpu["ports"] == ["127.0.0.1:11434:11434"]
+
+
+def test_selected_gpu_uuid_is_visible_without_docker_device_request_injection():
+    import json
+    from jinja2 import Environment, FileSystemLoader, StrictUndefined
+
+    role = ROOT / "roles/ollama"
+    config = yaml.safe_load((role / "defaults/main.yml").read_text())
+    uuid = "GPU-12345678-1234-1234-1234-123456789abc"
+    config.update(inference_accelerator="nvidia", ollama_gpu_device_uuids=[uuid])
+    environment = Environment(loader=FileSystemLoader(role / "templates"), undefined=StrictUndefined)
+    environment.filters["to_json"] = json.dumps
+    rendered = yaml.safe_load(environment.get_template("compose.yml.j2").render(config))
+    service = rendered["services"]["ollama"]
+    assert "deploy" not in service
+    assert service["environment"]["NVIDIA_VISIBLE_DEVICES"] == uuid
+    assert service["environment"]["CUDA_VISIBLE_DEVICES"] == uuid

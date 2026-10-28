@@ -995,3 +995,427 @@ groups:
           component: gpu
           service: llm-monitoring
           notification_scope: local_only
+  - orgId: 1
+    name: llm-gpu-diagnostics
+    folder: LLM
+    interval: 30s
+    rules:
+      - uid: llm-gpuinferenceplacementviolation
+        title: GpuInferencePlacementViolation
+        condition: B
+        data:
+          - refId: A
+            datasourceUid: victoriametrics
+            relativeTimeRange:
+              from: 600
+              to: 0
+            model:
+              datasource:
+                type: prometheus
+                uid: victoriametrics
+              editorMode: code
+              expr: >-
+                (((llm_inference_gpu_policy_satisfied{job="llm"} == 0) and on (instance) (llm_inference_gpu_check_success{job="llm"}
+                == 1) and on (instance) (llm_inference_probe_success{job="llm"} == 1)) and on
+                () (max(llm_exporter_info{job="llm",accelerator="nvidia"}) == 1)) * 0 + 1
+              instant: true
+              range: false
+              format: time_series
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 0
+              to: 0
+            model:
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: $A > 0
+              type: math
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: B
+        noDataState: OK
+        execErrState: Error
+        for: 2m
+        isPaused: false
+        annotations:
+          summary: Synthetic inference violated GPU placement policy
+          description: The model generated tokens but was absent, on CPU, or below the configured
+            GPU offload policy immediately afterward. This uses post-inference measurements, so
+            ordinary idle unloading does not trigger it.
+          dashboard_url: /grafana/d/llm-gpu
+        labels:
+          severity: critical
+          component: gpu
+          service: llm-monitoring
+          notification_scope: local_only
+      - uid: llm-gpuinferenceresidencyunknown
+        title: GpuInferenceResidencyUnknown
+        condition: B
+        data:
+          - refId: A
+            datasourceUid: victoriametrics
+            relativeTimeRange:
+              from: 600
+              to: 0
+            model:
+              datasource:
+                type: prometheus
+                uid: victoriametrics
+              editorMode: code
+              expr: >-
+                (((llm_inference_gpu_check_success{job="llm"} == 0) and on (instance) (llm_inference_probe_success{job="llm"}
+                == 1)) and on () (max(llm_exporter_info{job="llm",accelerator="nvidia"}) == 1))
+                * 0 + 1
+              instant: true
+              range: false
+              format: time_series
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 0
+              to: 0
+            model:
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: $A > 0
+              type: math
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: B
+        noDataState: OK
+        execErrState: Error
+        for: 2m
+        isPaused: false
+        annotations:
+          summary: Post-inference GPU placement could not be measured
+          description: Token generation succeeded, but the immediate api/ps query failed or returned
+            invalid allocation data. Check the exporter and Ollama API; unknown placement is not
+            reported as CPU fallback.
+          dashboard_url: /grafana/d/llm-gpu
+        labels:
+          severity: warning
+          component: gpu
+          service: llm-monitoring
+          notification_scope: local_only
+      - uid: llm-gpuoptionaldiagnosticsunavailable
+        title: GpuOptionalDiagnosticsUnavailable
+        condition: B
+        data:
+          - refId: A
+            datasourceUid: victoriametrics
+            relativeTimeRange:
+              from: 600
+              to: 0
+            model:
+              datasource:
+                type: prometheus
+                uid: victoriametrics
+              editorMode: code
+              expr: >-
+                ((llm_gpu_diagnostics_collection_success{job="node"} == 0) and on () (max(llm_exporter_info{job="llm",accelerator="nvidia"})
+                == 1)) * 0 + 1
+              instant: true
+              range: false
+              format: time_series
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 0
+              to: 0
+            model:
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: $A > 0
+              type: math
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: B
+        noDataState: OK
+        execErrState: Error
+        for: 5m
+        isPaused: false
+        annotations:
+          summary: Optional NVIDIA diagnostic collection failed
+          description: The XML diagnostic request or parser failed. Unsupported ECC and clock
+            fields on consumer cards are reported as supported=0 and do not trigger this alert.
+          dashboard_url: /grafana/d/llm-gpu
+        labels:
+          severity: warning
+          component: gpu
+          service: llm-monitoring
+          notification_scope: local_only
+      - uid: llm-gpuuncorrectedeccerrors
+        title: GpuUncorrectedEccErrors
+        condition: B
+        data:
+          - refId: A
+            datasourceUid: victoriametrics
+            relativeTimeRange:
+              from: 600
+              to: 0
+            model:
+              datasource:
+                type: prometheus
+                uid: victoriametrics
+              editorMode: code
+              expr: >-
+                ((llm_gpu_ecc_errors_total{job="node",kind="uncorrected",scope="volatile"} > 0)
+                and on () (max(llm_exporter_info{job="llm",accelerator="nvidia"}) == 1)) * 0 +
+                1
+              instant: true
+              range: false
+              format: time_series
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 0
+              to: 0
+            model:
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: $A > 0
+              type: math
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: B
+        noDataState: OK
+        execErrState: Error
+        for: 1m
+        isPaused: false
+        annotations:
+          summary: GPU reports uncorrected ECC errors since driver load
+          description: Inspect the device and NVIDIA diagnostics. The volatile counter resets
+            when the driver reloads; unsupported ECC fields produce no error-count series.
+          dashboard_url: /grafana/d/llm-gpu
+        labels:
+          severity: critical
+          component: gpu
+          service: llm-monitoring
+          notification_scope: local_only
+      - uid: llm-gpucorrectedeccerrorsincreasing
+        title: GpuCorrectedEccErrorsIncreasing
+        condition: B
+        data:
+          - refId: A
+            datasourceUid: victoriametrics
+            relativeTimeRange:
+              from: 600
+              to: 0
+            model:
+              datasource:
+                type: prometheus
+                uid: victoriametrics
+              editorMode: code
+              expr: >-
+                ((increase(llm_gpu_ecc_errors_total{job="node",kind="corrected",scope="volatile"}[15m])
+                > 10) and on () (max(llm_exporter_info{job="llm",accelerator="nvidia"}) == 1))
+                * 0 + 1
+              instant: true
+              range: false
+              format: time_series
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 0
+              to: 0
+            model:
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: $A > 0
+              type: math
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: B
+        noDataState: OK
+        execErrState: Error
+        for: 1m
+        isPaused: false
+        annotations:
+          summary: More than ten corrected ECC errors in 15 minutes
+          description: Review the affected GPU and correlate with uncorrected errors and Xid diagnostics.
+            Unsupported ECC fields do not trigger this rule.
+          dashboard_url: /grafana/d/llm-gpu
+        labels:
+          severity: warning
+          component: gpu
+          service: llm-monitoring
+          notification_scope: local_only
+      - uid: llm-gputhermalorpowerbrakethrottle
+        title: GpuThermalOrPowerBrakeThrottle
+        condition: B
+        data:
+          - refId: A
+            datasourceUid: victoriametrics
+            relativeTimeRange:
+              from: 600
+              to: 0
+            model:
+              datasource:
+                type: prometheus
+                uid: victoriametrics
+              editorMode: code
+              expr: >-
+                ((llm_gpu_throttle_active{job="node",reason=~"sw_thermal_slowdown|hw_thermal_slowdown|hw_power_brake_slowdown"}
+                == 1) and on () (max(llm_exporter_info{job="llm",accelerator="nvidia"}) == 1))
+                * 0 + 1
+              instant: true
+              range: false
+              format: time_series
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 0
+              to: 0
+            model:
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: $A > 0
+              type: math
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: B
+        noDataState: OK
+        execErrState: Error
+        for: 5m
+        isPaused: false
+        annotations:
+          summary: GPU thermal or hardware power-brake throttling persists
+          description: Review cooling and power delivery. Normal GPU idle and software power-cap
+            states are excluded; momentary events between one-minute samples may be missed.
+          dashboard_url: /grafana/d/llm-gpu
+        labels:
+          severity: warning
+          component: gpu
+          service: llm-monitoring
+          notification_scope: local_only
+      - uid: llm-gpuxiddetected
+        title: GpuXidDetected
+        condition: B
+        data:
+          - refId: A
+            datasourceUid: victoriametrics
+            relativeTimeRange:
+              from: 600
+              to: 0
+            model:
+              datasource:
+                type: prometheus
+                uid: victoriametrics
+              editorMode: code
+              expr: >-
+                (((llm_gpu_xid_events_recent{job="node"} > 0) and on (instance) (llm_gpu_xid_collection_success{job="node"}
+                == 1)) and on () (max(llm_exporter_info{job="llm",accelerator="nvidia"}) == 1))
+                * 0 + 1
+              instant: true
+              range: false
+              format: time_series
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 0
+              to: 0
+            model:
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: $A > 0
+              type: math
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: B
+        noDataState: OK
+        execErrState: Error
+        for: 0s
+        isPaused: false
+        annotations:
+          summary: NVIDIA Xid events occurred in the last 15 minutes
+          description: Inspect the host kernel journal and NVIDIA Xid catalog for the last code.
+            This is a bounded current-boot window, not a cumulative counter or a diagnosis of
+            the root cause.
+          dashboard_url: /grafana/d/llm-gpu
+        labels:
+          severity: critical
+          component: gpu
+          service: llm-monitoring
+          notification_scope: local_only
+      - uid: llm-gpuxidcollectionunavailable
+        title: GpuXidCollectionUnavailable
+        condition: B
+        data:
+          - refId: A
+            datasourceUid: victoriametrics
+            relativeTimeRange:
+              from: 600
+              to: 0
+            model:
+              datasource:
+                type: prometheus
+                uid: victoriametrics
+              editorMode: code
+              expr: >-
+                (((max(llm_gpu_xid_collection_success{job="node"}) == 0) or absent(llm_gpu_xid_collection_success{job="node"})
+                or (time() - max(llm_gpu_xid_collection_timestamp_seconds{job="node"}) > 180))
+                and on () (max(llm_exporter_info{job="llm",accelerator="nvidia"}) == 1)) * 0 +
+                1
+              instant: true
+              range: false
+              format: time_series
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 0
+              to: 0
+            model:
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: $A > 0
+              type: math
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: B
+        noDataState: OK
+        execErrState: Error
+        for: 2m
+        isPaused: false
+        annotations:
+          summary: NVIDIA Xid collection is unavailable or stale
+          description: Check gpu-xid.timer and the bounded root collector. Missing or unreadable
+            kernel journals are unknown, never a healthy zero-error reading.
+          dashboard_url: /grafana/d/llm-gpu
+        labels:
+          severity: warning
+          component: gpu
+          service: llm-monitoring
+          notification_scope: local_only

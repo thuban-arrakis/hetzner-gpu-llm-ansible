@@ -22,7 +22,13 @@ services:
       OLLAMA_KEEP_ALIVE: {{ ollama_keep_alive | to_json }}
 {% if inference_accelerator | default('nvidia') == 'nvidia' %}
       NVIDIA_DRIVER_CAPABILITIES: compute,utility
+      NVIDIA_VISIBLE_DEVICES: {{ ((ollama_gpu_device_uuids | join(',')) if ollama_gpu_device_uuids | length > 0 else 'all') | to_json }}
+      OLLAMA_GPU_OVERHEAD: {{ (ollama_gpu_memory_headroom_mib | int * 1048576) | string | to_json }}
+{% if ollama_gpu_device_uuids | length > 0 %}
+      CUDA_VISIBLE_DEVICES: {{ (ollama_gpu_device_uuids | join(',')) | to_json }}
+{% endif %}
 {% else %}
+      NVIDIA_VISIBLE_DEVICES: void
       CUDA_VISIBLE_DEVICES: "-1"
       ROCR_VISIBLE_DEVICES: "-1"
       GGML_VK_VISIBLE_DEVICES: "-1"
@@ -40,14 +46,7 @@ services:
     cpus: {{ ollama_cpu_limit | to_json }}
     pids_limit: 512
 {% if inference_accelerator | default('nvidia') == 'nvidia' %}
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities:
-                - gpu
+    runtime: nvidia
 {% endif %}
     healthcheck:
       test: ["CMD", "ollama", "list"]

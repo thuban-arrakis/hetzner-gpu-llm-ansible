@@ -130,3 +130,46 @@ def test_gpu_checks_cannot_be_disabled_with_ambiguous_config(watchdog, config, v
     config["require_gpu"] = value
     with pytest.raises(ValueError):
         watchdog.validate_config(config)
+
+
+@pytest.mark.parametrize("models,expected", [
+    ([], "healthy"),
+    ([{"size": 1000, "size_vram": 1000}], "healthy"),
+    ([{"size": 1000, "size_vram": 0}], "unhealthy"),
+    ([{"size": 1000, "size_vram": 999}], "unhealthy"),
+    ([{"size": 1000, "size_vram": 1001}], "unhealthy"),
+    ([{"size": 1000}], "unhealthy"),
+])
+def test_working_nvml_does_not_hide_loaded_cpu_fallback_but_idle_is_healthy(
+    watchdog, config, monkeypatch, models, expected,
+):
+    results = iter([
+        CompletedProcess([], 0, b"a" * 64, b""),
+        CompletedProcess([], 0, json.dumps({"Status": "running", "Health": {"Status": "healthy"}}).encode(), b""),
+        CompletedProcess([], 0, b"GPU-12345678-1234-1234-1234-123456789abc\n", b""),
+    ])
+    monkeypatch.setattr(watchdog, "command", lambda *args, **kwargs: next(results))
+    paths = []
+
+    class Response(io.BytesIO):
+        status = 200
+
+    class Opener:
+        def open(self, url, **kwargs):
+            paths.append(url)
+            content = [{"name": config["model"]}] if url.endswith("/api/tags") else [
+                {"name": config["model"], **item} for item in models
+            ]
+            return Response(json.dumps({"models": content}).encode())
+
+    monkeypatch.setattr(watchdog, "build_opener", lambda *args: Opener())
+    assert watchdog.probe_health(config) == expected
+    # Watchdog never wakes idle models or competes with user generation.
+    assert paths == [config["api_url"] + "/api/tags", config["api_url"] + "/api/ps"]
+
+
+@pytest.mark.parametrize("policy,fraction", [("automatic", 0.5), ("partial", 0), ("partial", 1.1)])
+def test_invalid_placement_policy_is_rejected(watchdog, config, policy, fraction):
+    config.update(gpu_offload_policy=policy, gpu_min_vram_fraction=fraction)
+    with pytest.raises(ValueError):
+        watchdog.validate_config(config)

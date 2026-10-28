@@ -73,3 +73,50 @@ def test_symbolic_link_collector_directory_is_rejected(gpu_collector, tmp_path):
     directory.symlink_to(tmp_path, target_is_directory=True)
     with pytest.raises(ValueError):
         gpu_collector.publish(directory / "gpu.prom", "not written\n")
+
+
+def diagnostic_xml(ecc="N/A", thermal="Not Active", prefix="clocks_event"):
+    return f'''<?xml version="1.0"?>
+    <!DOCTYPE nvidia_smi_log SYSTEM "nvsmi_device_v12.dtd">
+    <nvidia_smi_log><gpu id="00000000:01:00.0"><uuid>GPU-test</uuid>
+      <ecc_errors><volatile><single_bit><total>{ecc}</total></single_bit>
+      <double_bit><total>{ecc}</total></double_bit></volatile></ecc_errors>
+      <{prefix}_reasons><{prefix}_reason_sw_thermal_slowdown>{thermal}</{prefix}_reason_sw_thermal_slowdown>
+      </{prefix}_reasons></gpu></nvidia_smi_log>'''
+
+
+def test_unsupported_consumer_diagnostics_are_not_healthy_zero_errors(gpu_collector):
+    text = "\n".join(gpu_collector.diagnostics(diagnostic_xml()))
+    assert 'llm_gpu_ecc_supported{uuid="GPU-test",kind="uncorrected",scope="volatile"} 0' in text
+    assert not any(line.startswith("llm_gpu_ecc_errors_total{") for line in text.splitlines())
+    assert 'llm_gpu_throttle_active{uuid="GPU-test",reason="sw_thermal_slowdown"} 0' in text
+    assert 'llm_gpu_throttle_supported{uuid="GPU-test",reason="hw_thermal_slowdown"} 0' in text
+
+
+@pytest.mark.parametrize("prefix", ["clocks_event", "clocks_throttle"])
+def test_ecc_and_current_and_legacy_clock_fields(gpu_collector, prefix):
+    text = "\n".join(gpu_collector.diagnostics(diagnostic_xml("3", "Active", prefix)))
+    assert 'llm_gpu_ecc_errors_total{uuid="GPU-test",kind="uncorrected",scope="volatile"} 3' in text
+    assert 'llm_gpu_throttle_active{uuid="GPU-test",reason="sw_thermal_slowdown"} 1' in text
+
+
+def test_optional_query_failure_preserves_core_measurements(gpu_collector, monkeypatch):
+    def run(args, **kwargs):
+        if args == gpu_collector.QUERY:
+            return subprocess.CompletedProcess(args, 0, '0, GPU-test, NVIDIA, 42, 512, 16384, 25, N/A\n')
+        raise subprocess.CalledProcessError(3, args, stderr="untrusted diagnostic content")
+    monkeypatch.setattr(gpu_collector.subprocess, "run", run)
+    metrics = gpu_collector.collect()
+    assert "llm_gpu_collection_success 1\n" in metrics
+    assert "llm_gpu_diagnostics_collection_success 0\n" in metrics
+    assert "llm_gpu_memory_used_bytes" in metrics
+    assert "untrusted" not in metrics
+
+
+@pytest.mark.parametrize("xml", [
+    diagnostic_xml("-1"), diagnostic_xml("nan"), diagnostic_xml("0", "unexpected"),
+    "<nvidia_smi_log/>", '<!ENTITY bad "unsafe"><nvidia_smi_log/>',
+])
+def test_malformed_optional_diagnostics_are_unknown(gpu_collector, xml):
+    with pytest.raises(ValueError):
+        gpu_collector.diagnostics(xml)

@@ -65,6 +65,15 @@
     lock_timeout: 180
   when: gpu_host_driver_install_required
 
+- name: Record the maintenance reboot before changing driver packages
+  ansible.builtin.copy:
+    dest: /var/run/gpu-host-driver-reboot-required
+    content: "GPU driver installation requires a maintenance reboot.\n"
+    owner: root
+    group: root
+    mode: '0600'
+  when: gpu_host_driver_install_required
+
 - name: Install the explicitly selected Ubuntu NVIDIA driver
   ansible.builtin.apt:
     name: "{{ gpu_host_driver_package }}"
@@ -138,17 +147,6 @@
   when:
     - gpu_host_driver_install_required
     - not ansible_check_mode
-
-- name: Mark a reboot after changing the NVIDIA driver
-  ansible.builtin.copy:
-    dest: /var/run/gpu-host-driver-reboot-required
-    content: "GPU driver installation requires a maintenance reboot.\n"
-    owner: root
-    group: root
-    mode: '0600'
-  when: >-
-    (gpu_host_explicit_driver is changed) or
-    (gpu_host_auto_driver is changed)
 
 - name: Check Ubuntu's reboot-required marker
   ansible.builtin.stat:

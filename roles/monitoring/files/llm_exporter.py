@@ -21,6 +21,8 @@ from urllib.error import URLError
 from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
+from gpu_residency import evaluate_residency
+
 
 MAX_RESPONSE_BYTES = 1024 * 1024
 DEFAULTS = {
@@ -29,6 +31,8 @@ DEFAULTS = {
     "listen_port": 9400,
     "model": "qwen3:4b-q4_K_M",
     "accelerator": "cpu",
+    "gpu_offload_policy": "full",
+    "gpu_min_vram_fraction": 0.5,
     "context_length": 2048,
     "health_interval_seconds": 30,
     "inference_interval_seconds": 300,
@@ -58,6 +62,13 @@ METRICS = {
     "llm_inference_probe_output_tokens": ("gauge", "Output eval_count of the last successful synthetic request.", math.nan),
     "llm_inference_last_success_timestamp_seconds": ("gauge", "Unix timestamp of the last successful synthetic inference.", 0),
     "llm_inference_probe_in_progress": ("gauge", "One when this exporter has an inference probe in progress.", 0),
+    "llm_inference_gpu_check_success": ("gauge", "Post-inference GPU residency could be measured; NaN in CPU mode or after generation failure.", math.nan),
+    "llm_inference_gpu_policy_satisfied": ("gauge", "Last post-inference residency satisfies configured GPU policy; independent of later idle unload.", math.nan),
+    "llm_inference_model_loaded": ("gauge", "Configured model was present immediately after the last synthetic generation.", math.nan),
+    "llm_inference_model_resident_bytes": ("gauge", "Model size measured immediately after synthetic generation in GPU mode.", math.nan),
+    "llm_inference_model_vram_bytes": ("gauge", "Model VRAM allocation immediately after synthetic generation in GPU mode.", math.nan),
+    "llm_inference_model_gpu_fraction": ("gauge", "Post-inference size_vram divided by size; not a layer count or device memory utilization.", math.nan),
+    "llm_inference_gpu_check_timestamp_seconds": ("gauge", "Unix timestamp of the last post-inference GPU residency check attempt.", 0),
 }
 
 
@@ -79,6 +90,7 @@ def validate_config(raw):
         raise ValueError("Invalid metrics port")
     if config["accelerator"] not in ("cpu", "nvidia"):
         raise ValueError("Unsupported accelerator")
+    evaluate_residency([], config["model"], config["gpu_offload_policy"], config["gpu_min_vram_fraction"])
     if not isinstance(config["model"], str) or not re.fullmatch(
         r"[a-zA-Z0-9][a-zA-Z0-9._/+-]{0,150}:[a-zA-Z0-9._+-]{1,50}", config["model"]
     ):
@@ -135,19 +147,30 @@ def nonnegative_integer(value):
 def collect_health(config, request=request_json):
     catalogue = request(config, "/api/tags").get("models")
     resident = request(config, "/api/ps").get("models")
-    if not isinstance(catalogue, list) or not isinstance(resident, list):
+    if not isinstance(catalogue, list):
         raise ValueError("Missing model list")
-    matching = [item for item in resident if isinstance(item, dict) and item.get("name") == config["model"]]
+    measurements = resident_measurements(resident, config["model"])
+    return {
+        "available": int(any(isinstance(item, dict) and item.get("name") == config["model"] for item in catalogue)),
+        **measurements,
+        "cpu_bytes": measurements["resident_bytes"] - measurements["vram_bytes"],
+    }
+
+
+def resident_measurements(resident, model):
+    if not isinstance(resident, list) or any(not isinstance(item, dict) for item in resident):
+        raise ValueError("Missing model list")
+    matching = [item for item in resident if item.get("name") == model]
     if len(matching) > 1:
         raise ValueError("Ambiguous model residency")
     size = nonnegative_integer(matching[0]["size"]) if matching else 0
     vram = nonnegative_integer(matching[0]["size_vram"]) if matching else 0
+    if matching and (size == 0 or vram > size):
+        raise ValueError("Invalid model residency")
     return {
-        "available": int(any(isinstance(item, dict) and item.get("name") == config["model"] for item in catalogue)),
         "loaded": int(bool(matching)),
         "resident_bytes": size,
         "vram_bytes": vram,
-        "cpu_bytes": max(size - vram, 0),
     }
 
 
@@ -167,13 +190,29 @@ def collect_inference(config, request=request_json):
         or not isinstance(response.get("response"), str) or not response["response"].strip()
     ):
         raise ValueError("Inference did not return valid bounded output")
+    # GPU placement is checked only after generation with positive keep_alive.
+    # Ordinary health polls may see an idle unload, which is not CPU fallback.
+    placement = {"gpu_check_success": 0, "gpu_policy_satisfied": 0,
+                 "loaded": 0, "resident_bytes": 0, "vram_bytes": 0}
+    if config["accelerator"] == "nvidia":
+        try:
+            models = request(config, "/api/ps").get("models")
+            measured = resident_measurements(models, config["model"])
+            state = evaluate_residency(models, config["model"], config["gpu_offload_policy"],
+                                       config["gpu_min_vram_fraction"])
+            placement = {"gpu_check_success": 1, "gpu_policy_satisfied": int(state == "ok"), **measured}
+        except (OSError, ValueError, KeyError, TypeError):
+            # Token generation still succeeded. An unknown residency measurement
+            # gets its own alert instead of being confused with CPU fallback.
+            pass
     # Drop generated text and all unrecognized response fields here.
-    return {"output_tokens": count, "tokens_per_second": count * 1_000_000_000 / duration}
+    return {"output_tokens": count, "tokens_per_second": count * 1_000_000_000 / duration, **placement}
 
 
 def validate_result(kind, result):
     keys = {"available", "loaded", "resident_bytes", "vram_bytes", "cpu_bytes"} if kind == "health" else {
-        "output_tokens", "tokens_per_second",
+        "output_tokens", "tokens_per_second", "gpu_check_success", "gpu_policy_satisfied",
+        "loaded", "resident_bytes", "vram_bytes",
     }
     if not isinstance(result, dict) or set(result) != keys:
         raise ValueError("Invalid probe result")
@@ -184,6 +223,12 @@ def validate_result(kind, result):
         raise ValueError("Invalid health result")
     if kind == "inference" and not 1 <= result["output_tokens"] <= 8:
         raise ValueError("Invalid inference token count")
+    if kind == "inference" and any(result[name] not in (0, 1) for name in (
+        "gpu_check_success", "gpu_policy_satisfied", "loaded",
+    )):
+        raise ValueError("Invalid inference placement result")
+    if result["vram_bytes"] > result["resident_bytes"]:
+        raise ValueError("Invalid model allocation result")
     return result
 
 
@@ -206,7 +251,9 @@ class Exporter:
         # A child process provides a hard wall-clock limit even if a local HTTP
         # peer drips bytes forever; socket timeouts alone are only idle limits.
         timeout = (2 * self.config["request_timeout_seconds"] if kind == "health" else
-                   self.config["inference_timeout_seconds"]) + 2
+                   self.config["inference_timeout_seconds"] + (
+                       self.config["request_timeout_seconds"] if self.config["accelerator"] == "nvidia" else 0
+                   )) + 2
         result = subprocess.run(
             [sys.executable, str(Path(__file__).resolve()), "--config", self.config_path, "--probe", kind],
             capture_output=True, timeout=timeout, check=False,
@@ -248,6 +295,20 @@ class Exporter:
                         "llm_inference_probe_tokens_per_second": result["tokens_per_second"],
                         "llm_inference_last_success_timestamp_seconds": self.clock(),
                     })
+                    if self.config["accelerator"] == "nvidia":
+                        known = bool(result["gpu_check_success"])
+                        self.metrics.update({
+                            "llm_inference_gpu_check_success": result["gpu_check_success"],
+                            "llm_inference_gpu_policy_satisfied": result["gpu_policy_satisfied"] if known else math.nan,
+                            "llm_inference_model_loaded": result["loaded"] if known else math.nan,
+                            "llm_inference_model_resident_bytes": result["resident_bytes"] if known else math.nan,
+                            "llm_inference_model_vram_bytes": result["vram_bytes"] if known else math.nan,
+                            "llm_inference_model_gpu_fraction": (
+                                result["vram_bytes"] / result["resident_bytes"] if known and result["resident_bytes"]
+                                else (0 if known else math.nan)
+                            ),
+                            "llm_inference_gpu_check_timestamp_seconds": self.clock(),
+                        })
         except (OSError, ValueError, KeyError, TypeError, subprocess.TimeoutExpired) as failure:
             with self._state_lock:
                 self.metrics[prefix + "_errors_total"] += 1
@@ -265,6 +326,9 @@ class Exporter:
                         "llm_inference_probe_tokens_per_second": math.nan,
                         "llm_inference_probe_output_tokens": math.nan,
                     })
+                    for name in ("gpu_check_success", "gpu_policy_satisfied", "model_loaded",
+                                 "model_resident_bytes", "model_vram_bytes", "model_gpu_fraction"):
+                        self.metrics["llm_inference_" + name] = math.nan
         finally:
             with self._state_lock:
                 if kind == "inference":

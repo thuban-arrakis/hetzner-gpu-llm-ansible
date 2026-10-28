@@ -15,6 +15,22 @@
       - ollama_install_dir != ollama_data_dir
       - ollama_context_length | int > 0
       - ollama_parallel_requests | int > 0
+      - ollama_parallel_requests | int <= 32
+      - ollama_context_length | int <= 1048576
+      - ollama_gpu_offload_policy in ['full', 'partial']
+      - ollama_gpu_min_vram_fraction | float > 0
+      - ollama_gpu_min_vram_fraction | float <= 1
+      - ollama_gpu_memory_headroom_mib | int >= 0
+      - ollama_gpu_device_uuids is sequence and ollama_gpu_device_uuids is not string
+      - ollama_gpu_device_uuids | unique | length == ollama_gpu_device_uuids | length
+      - >-
+        ollama_gpu_device_uuids | reject('match',
+        '^GPU-[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}$') | list | length == 0
+      - ollama_acceptance_prompt is string
+      - ollama_acceptance_min_context_fraction | float > 0
+      - ollama_acceptance_min_context_fraction | float < 1
+      - ollama_acceptance_predict_tokens | int > 0
+      - ollama_acceptance_timeout | int >= 60
       - ollama_max_queue | int > 0
       - ollama_cpu_limit | float > 0
       - ollama_memory_limit is match('^[1-9][0-9]*[gGmM]$')
@@ -104,6 +120,25 @@
     group: root
     mode: "0750"
 
+- name: Install shared GPU placement policy and capacity acceptance checker
+  ansible.builtin.copy:
+    src: "{{ item }}"
+    dest: "/usr/local/libexec/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - gpu_residency.py
+    - gpu_acceptance.py
+
+- name: Install the capacity acceptance configuration
+  ansible.builtin.template:
+    src: acceptance.json.j2
+    dest: "{{ ollama_install_dir }}/acceptance.json"
+    owner: root
+    group: root
+    mode: "0640"
+
 - name: Install the root-owned health checker configuration
   ansible.builtin.template:
     src: watchdog.json.j2
@@ -175,12 +210,11 @@
   ansible.builtin.systemd_service:
     name: ollama.service
     enabled: true
-    # Reopen NVIDIA devices after a monitoring unit installation caused a
-    # systemd reload; unchanged deployments and explicit CPU mode only start.
+    # Recreate managed GPU containers only when their runtime configuration
+    # changed. JIT-CDI survives unrelated systemd daemon-reload operations.
     state: >-
       {{ 'restarted' if (inference_accelerator | default('nvidia') == 'nvidia'
-          and (monitoring_systemd_reload_performed | default(false) | bool
-               or public_api_systemd_reload_performed | default(false) | bool)) else 'started' }}
+          and gpu_host_runtime_configuration_changed | default(false) | bool) else 'started' }}
   when: not ansible_check_mode
 
 - name: Wait for the local model catalogue

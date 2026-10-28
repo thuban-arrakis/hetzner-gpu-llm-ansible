@@ -52,9 +52,20 @@ jobs:
           caddy_sha512+='83f3a99f0c52409df77d20123fb0b523edad8a66d8f5e49136197bf61ef0e7'
           printf '%s  %s\n' "$caddy_sha512" "$RUNNER_TEMP/caddy.tar.gz" | sha512sum --check --status
           tar -xzf "$RUNNER_TEMP/caddy.tar.gz" -C "$RUNNER_TEMP" caddy
+      - name: Install verified VictoriaMetrics for alert behavior tests
+        run: |
+          vm_release='https://github.com/VictoriaMetrics/VictoriaMetrics/releases/download/v1.155.0'
+          curl --fail --silent --show-error --location --retry 3 \
+            "$vm_release/victoria-metrics-linux-amd64-v1.155.0.tar.gz" \
+            --output "$RUNNER_TEMP/victoriametrics.tar.gz"
+          printf '%s  %s\n' \
+            '7180e65913d55ab99c0be8f4a3ad17a0fafe5598a21ff6327fecba3190d7b176' \
+            "$RUNNER_TEMP/victoriametrics.tar.gz" | sha256sum --check --status
+          tar -xzf "$RUNNER_TEMP/victoriametrics.tar.gz" -C "$RUNNER_TEMP" victoria-metrics-prod
       - name: Validate Ansible and automation contracts
         env:
           CADDY_BINARY: ${{ runner.temp }}/caddy
+          VICTORIAMETRICS_BINARY: ${{ runner.temp }}/victoria-metrics-prod
         run: |
           ansible-playbook -i inventory/example.yml playbooks/deploy.yml --syntax-check
           ansible-playbook -i inventory/example.yml playbooks/bootstrap-runner.yml --syntax-check

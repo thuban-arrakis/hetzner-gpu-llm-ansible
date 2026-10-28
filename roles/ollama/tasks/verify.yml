@@ -53,72 +53,19 @@
           guard has been stopped and disabled. Correct the model and context
           configuration, then rerun the playbook before restoring public access.
 
-- name: Run a real local inference request
-  ansible.builtin.uri:
-    url: "http://127.0.0.1:{{ ollama_port }}/api/generate"
-    method: POST
-    body_format: json
-    body:
-      model: "{{ ollama_model }}"
-      prompt: Reply with the single word READY.
-      stream: false
-      think: false
-      keep_alive: "{{ ollama_keep_alive }}"
-      options:
-        temperature: 0
-        num_predict: 16
-        num_ctx: "{{ ollama_context_length | int }}"
-    status_code: 200
-    use_proxy: false
-    timeout: "{{ ollama_inference_timeout }}"
-  register: ollama_inference_result
+- name: Accept configured context concurrency GPU placement and sampled VRAM headroom
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/flock
+      - --exclusive
+      - --wait
+      - "{{ ollama_acceptance_timeout | string }}"
+      - /run/ollama/maintenance.lock
+      - /usr/bin/python3
+      - /usr/local/libexec/gpu_acceptance.py
+      - --config
+      - "{{ ollama_install_dir }}/acceptance.json"
+  async: "{{ ollama_acceptance_timeout | int * 2 + 60 }}"
+  poll: 5
   changed_when: false
-
-- name: Verify that the model generated tokens successfully
-  ansible.builtin.assert:
-    that:
-      - ollama_inference_result.json.done | default(false) | bool
-      - ollama_inference_result.json.response | default('') | length > 0
-      - ollama_inference_result.json.eval_count | default(0) | int > 0
-    fail_msg: The inference endpoint did not successfully generate a response.
-
-- name: Read accelerator residency of the loaded model
-  ansible.builtin.uri:
-    url: "http://127.0.0.1:{{ ollama_port }}/api/ps"
-    method: GET
-    status_code: 200
-    use_proxy: false
-    timeout: 10
-  register: ollama_running_models
-
-- name: Select the loaded model after inference
-  ansible.builtin.set_fact:
-    ollama_loaded_models: >-
-      {{ ollama_running_models.json.models
-         | selectattr('name', 'equalto', ollama_model) | list }}
-
-- name: Require the model to remain loaded for accelerator verification
-  ansible.builtin.assert:
-    that:
-      - ollama_loaded_models | length == 1
-      - ollama_loaded_models[0].size_vram is defined
-    fail_msg: Loaded model residency could not be verified after inference.
-
-- name: Reject silent CPU-only fallback
-  ansible.builtin.assert:
-    that:
-      - >-
-        ollama_loaded_models[0].size_vram | int > 0
-    fail_msg: >-
-      Inference completed without reported GPU memory residency. Check the
-      NVIDIA driver, container toolkit, device permissions, and available VRAM.
-      This deployment requires GPU-backed inference and will not accept CPU-only
-      fallback. This check proves GPU participation, not complete GPU offload.
-  when: inference_accelerator | default('nvidia') == 'nvidia'
-
-- name: Verify explicitly selected CPU demonstration mode
-  ansible.builtin.assert:
-    that:
-      - ollama_loaded_models[0].size_vram | int == 0
-    fail_msg: CPU demonstration mode unexpectedly reported GPU memory residency.
-  when: inference_accelerator | default('nvidia') == 'cpu'
+  register: ollama_capacity_acceptance

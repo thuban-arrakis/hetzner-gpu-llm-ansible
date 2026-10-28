@@ -11,6 +11,7 @@ import stat
 import subprocess
 import tempfile
 import time
+import xml.etree.ElementTree as ET
 
 
 QUERY = [
@@ -18,6 +19,12 @@ QUERY = [
     "--query-gpu=index,uuid,name,temperature.gpu,memory.used,memory.total,utilization.gpu,power.draw",
     "--format=csv,noheader,nounits",
 ]
+DIAGNOSTIC_QUERY = ["/usr/bin/nvidia-smi", "-q", "-x"]
+UNSUPPORTED = {"", "N/A", "[N/A]", "[Not Supported]", "Not Supported"}
+# Idle and application-clock limits are normal operating states, not faults.
+THROTTLE_REASONS = (
+    "sw_thermal_slowdown", "hw_thermal_slowdown", "hw_power_brake_slowdown", "sw_power_cap",
+)
 
 
 def label(value):
@@ -51,11 +58,57 @@ def readings(text):
         }
         if values["llm_gpu_utilization_ratio"] > 1:
             raise ValueError("invalid GPU utilization")
-        if row[7].strip() not in ("N/A", "[N/A]", "[Not Supported]"):
+        if row[7].strip() not in UNSUPPORTED:
             values["llm_gpu_power_watts"] = number(row[7])
         lines.extend(f"{metric}{{{labels}}} {value:.12g}" for metric, value in values.items())
     if not seen:
         raise ValueError("no GPU measurements")
+    return lines
+
+
+def diagnostics(text):
+    """Optional fields are absent on many consumer cards; never fabricate zeros."""
+    if len(text.encode()) > 2 * 1024 * 1024 or "<!ENTITY" in text:
+        raise ValueError("invalid diagnostic document")
+    root = ET.fromstring(text)
+    devices = root.findall("gpu")
+    if root.tag != "nvidia_smi_log" or not devices:
+        raise ValueError("missing diagnostic devices")
+    lines, seen = ["# TYPE llm_gpu_ecc_errors_total counter"], set()
+    for gpu in devices:
+        uuid = (gpu.findtext("uuid") or "").strip()
+        if not uuid or uuid in seen:
+            raise ValueError("invalid diagnostic identity")
+        seen.add(uuid)
+        identity = f'uuid="{label(uuid)}"'
+        for kind, tag in (("corrected", "single_bit"), ("uncorrected", "double_bit")):
+            for scope in ("volatile", "aggregate"):
+                raw = gpu.findtext(f"ecc_errors/{scope}/{tag}/total")
+                # Newer XML schemas may use the corrected/uncorrected wording.
+                if raw is None:
+                    raw = gpu.findtext(f"ecc_errors/{scope}/{kind}/total")
+                raw = (raw or "").strip()
+                supported = raw not in UNSUPPORTED
+                labels = f'{identity},kind="{kind}",scope="{scope}"'
+                lines.append(f"llm_gpu_ecc_supported{{{labels}}} {int(supported)}")
+                if supported:
+                    if not raw.isdecimal():
+                        raise ValueError("invalid ECC count")
+                    lines.append(f"llm_gpu_ecc_errors_total{{{labels}}} {int(raw)}")
+        for reason in THROTTLE_REASONS:
+            raw = None
+            for prefix in ("clocks_event", "clocks_throttle"):
+                raw = gpu.findtext(f"{prefix}_reasons/{prefix}_reason_{reason}")
+                if raw is not None:
+                    break
+            raw = (raw or "").strip()
+            supported = raw not in UNSUPPORTED
+            labels = f'{identity},reason="{reason}"'
+            lines.append(f"llm_gpu_throttle_supported{{{labels}}} {int(supported)}")
+            if supported:
+                if raw not in ("Active", "Not Active"):
+                    raise ValueError("invalid clock event state")
+                lines.append(f"llm_gpu_throttle_active{{{labels}}} {int(raw == 'Active')}")
     return lines
 
 
@@ -67,8 +120,18 @@ def collect():
     except (OSError, subprocess.SubprocessError, ValueError):
         metrics = []
         success = 0
+    diagnostic_success = 0
+    if success:
+        try:
+            result = subprocess.run(DIAGNOSTIC_QUERY, capture_output=True, text=True, check=True, timeout=6)
+            metrics.extend(diagnostics(result.stdout))
+            diagnostic_success = 1
+        except (OSError, subprocess.SubprocessError, ValueError, ET.ParseError):
+            # Optional diagnostics must not erase independently valid core data.
+            pass
     metrics += [
         f"llm_gpu_collection_success {success}",
+        f"llm_gpu_diagnostics_collection_success {diagnostic_success}",
         f"llm_gpu_collection_timestamp_seconds {time.time():.3f}",
     ]
     return "\n".join(metrics) + "\n"

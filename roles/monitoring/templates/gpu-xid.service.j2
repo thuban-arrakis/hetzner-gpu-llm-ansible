@@ -1,0 +1,28 @@
+[Unit]
+Description=Publish bounded numeric NVIDIA Xid kernel diagnostics
+After=systemd-journald.service
+
+[Service]
+Type=oneshot
+# Only this fixed collector reads the kernel journal. The network-facing
+# monitoring identities never join systemd-journal or receive raw log content.
+User=root
+Group=root
+ExecStart=/usr/bin/python3 /usr/local/lib/llm-monitoring/gpu_xid_textfile.py --output /var/lib/llm-monitoring/kernel-textfile/gpu-xid.prom
+TimeoutStartSec=15
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_UNIX
+ReadWritePaths=/var/lib/llm-monitoring/kernel-textfile
+CapabilityBoundingSet=
+MemoryMax=64M
+CPUQuota=10%
+TasksMax=16
+UMask=0022
