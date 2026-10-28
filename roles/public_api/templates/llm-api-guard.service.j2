@@ -1,0 +1,41 @@
+[Unit]
+Description=Bounded admission and inference proxy for the public LLM API
+After=network.target
+Before=caddy.service
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=llm-api-guard
+Group=llm-api-guard
+ExecStart=/usr/local/libexec/llm-api-guard -config /etc/llm-api-guard/config.json
+Environment=GOMEMLIMIT=96MiB
+Environment=GOMAXPROCS=2
+Restart=on-failure
+RestartSec=2
+TimeoutStopSec=10
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+IPAddressDeny=any
+IPAddressAllow=localhost
+CapabilityBoundingSet=
+AmbientCapabilities=
+MemoryMax=128M
+CPUQuota=50%
+TasksMax=64
+LimitNOFILE=512
+UMask=0077
+StandardOutput=null
+StandardError=null
+
+[Install]
+WantedBy=multi-user.target

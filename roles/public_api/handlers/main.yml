@@ -1,4 +1,19 @@
 ---
+- name: Pause bounded admission for model acceptance
+  ansible.builtin.systemd_service:
+    name: llm-api-guard.service
+    # Changed policy is activated only after the model/context acceptance checks.
+    state: stopped
+    enabled: false
+  when: not ansible_check_mode
+
+- name: Apply public connection limits
+  ansible.builtin.systemd_service:
+    name: llm-connection-guard.service
+    state: reloaded
+    enabled: true
+  when: not ansible_check_mode
+
 - name: Refresh Caddy package metadata
   ansible.builtin.apt:
     update_cache: true

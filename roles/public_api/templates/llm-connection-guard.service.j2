@@ -1,0 +1,28 @@
+[Unit]
+Description=Bound new HTTP and HTTPS connections before TLS processing
+After=network.target ufw.service docker.service
+Before=caddy.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=true
+User=root
+Group=root
+ExecStart=/usr/bin/python3 /usr/local/libexec/llm-connection-guard --install
+ExecReload=/usr/bin/python3 /usr/local/libexec/llm-connection-guard --install
+ExecStop=/usr/bin/python3 /usr/local/libexec/llm-connection-guard --remove
+TimeoutStartSec=120
+TimeoutStopSec=120
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+ReadWritePaths=/run
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

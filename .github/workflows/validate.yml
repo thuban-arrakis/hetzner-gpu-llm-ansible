@@ -57,6 +57,17 @@ jobs:
           terraform -chdir=terraform validate
           terraform -chdir=terraform/cloud init -backend=false -input=false -lockfile=readonly
           terraform -chdir=terraform/cloud validate
+      - name: Validate bounded request admission and inference policies
+        working-directory: roles/public_api/files/api_guard
+        env:
+          GOTOOLCHAIN: local
+          GOPROXY: "off"
+          GOSUMDB: "off"
+          GOCACHE: ${{ runner.temp }}/guard-go-cache
+          GOPATH: ${{ runner.temp }}/guard-go
+        run: |
+          go version
+          go test -race ./...
       - name: Scan source and commit history for secrets
         run: |
           curl --fail --silent --show-error --location --retry 3 \

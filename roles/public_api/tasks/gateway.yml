@@ -1,0 +1,22 @@
+---
+- name: Install and validate the authenticated inference-only gateway
+  ansible.builtin.template:
+    src: Caddyfile.j2
+    dest: /etc/caddy/Caddyfile
+    owner: root
+    group: caddy
+    mode: "0640"
+    validate: /usr/bin/caddy validate --config %s --adapter caddyfile
+  no_log: true
+  diff: false
+  notify: Restart authenticated HTTPS gateway
+
+- name: Apply the authenticated configuration before inference startup
+  ansible.builtin.meta: flush_handlers
+
+- name: Enable HTTPS startup and automatic certificate renewal
+  ansible.builtin.systemd_service:
+    name: caddy.service
+    enabled: true
+    state: started
+  when: not ansible_check_mode

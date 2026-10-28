@@ -54,7 +54,7 @@
     state: directory
     owner: root
     group: root
-    mode: "0750"
+    mode: "{{ '0755' if item == '/usr/local/libexec' else '0750' }}"
   loop:
     - "{{ ollama_install_dir }}"
     - /usr/local/libexec
@@ -74,7 +74,18 @@
     owner: root
     group: root
     mode: "0640"
+  register: ollama_compose_configuration
   notify: Restart Ollama
+
+- name: Pause public inference before applying a changed backend configuration
+  ansible.builtin.systemd_service:
+    name: llm-api-guard.service
+    enabled: false
+    state: stopped
+  when:
+    - public_api_enabled | default(false) | bool
+    - ollama_compose_configuration.changed
+    - not ansible_check_mode
 
 - name: Install the systemd service
   ansible.builtin.template:
@@ -168,7 +179,8 @@
     # systemd reload; unchanged deployments and explicit CPU mode only start.
     state: >-
       {{ 'restarted' if (inference_accelerator | default('nvidia') == 'nvidia'
-          and monitoring_systemd_reload_performed | default(false) | bool) else 'started' }}
+          and (monitoring_systemd_reload_performed | default(false) | bool
+               or public_api_systemd_reload_performed | default(false) | bool)) else 'started' }}
   when: not ansible_check_mode
 
 - name: Wait for the local model catalogue
@@ -224,6 +236,13 @@
     - name: Verify the model artifact and selected inference mode
       ansible.builtin.include_tasks: verify.yml
   rescue:
+    - name: Stop public admission after failed inference acceptance
+      ansible.builtin.systemd_service:
+        name: llm-api-guard.service
+        enabled: false
+        state: stopped
+      when: public_api_enabled | default(false) | bool
+
     - name: Disable recovery after failed acceptance checks
       ansible.builtin.systemd_service:
         name: ollama-watchdog.timer

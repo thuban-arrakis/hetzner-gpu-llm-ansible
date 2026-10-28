@@ -17,6 +17,10 @@ scrape_configs:
   - job_name: caddy
     static_configs:
       - targets: ["127.0.0.1:2019"]
+  - job_name: api_guard
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["127.0.0.1:{{ public_api_guard_port | default(11435) }}"]
   - job_name: grafana
     metrics_path: /grafana/metrics
     static_configs:

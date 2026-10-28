@@ -1,0 +1,41 @@
+---
+# Run only after Ollama artifact, context and inference acceptance succeeds.
+- name: Ensure the unprivileged admission service can traverse its binary directory
+  ansible.builtin.file:
+    path: /usr/local/libexec
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Enable the accepted public admission policy
+  ansible.builtin.systemd_service:
+    name: llm-api-guard.service
+    enabled: true
+    state: started
+
+- name: Verify the private admission listener
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ public_api_guard_port }}/healthz"
+    method: GET
+    status_code: 200
+    use_proxy: false
+    timeout: 5
+  register: public_api_guard_health
+  until: public_api_guard_health.status | default(0) == 200
+  retries: 10
+  delay: 2
+
+- name: Verify public TLS and refusal of unauthenticated requests
+  ansible.builtin.uri:
+    url: "https://{{ public_api_address }}/api/tags"
+    method: GET
+    status_code: 401
+    validate_certs: true
+    follow_redirects: none
+    use_proxy: false
+    timeout: 15
+  register: public_api_tls_check
+  until: public_api_tls_check.status | default(0) == 401
+  retries: 30
+  delay: 15

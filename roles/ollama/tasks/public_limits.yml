@@ -1,0 +1,144 @@
+---
+# Ollama v0.40.12 applies defaults, GGUF sampler defaults, Modelfile options,
+# then request options. Its OpenAI adapter does not forward native num_ctx.
+# GGUF sampler defaults cannot set num_ctx in this pinned release; require a
+# local GGUF artifact and verify both Modelfile overrides and the actual runner.
+- name: Require aligned public and private context limits and a pinned model
+  ansible.builtin.assert:
+    that:
+      - ollama_model_digest is match('^[a-f0-9]{64}$')
+      - ollama_context_length | int > 0
+      - public_api_context_tokens | default(ollama_context_length) | int == ollama_context_length | int
+      - ollama_parallel_requests | int == 1
+    quiet: true
+    fail_msg: >-
+      Public inference requires an approved model digest, matching gateway and
+      Ollama context limits, and one parallel inference slot.
+
+- name: Read only the running container context environment variable
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/docker
+      - compose
+      - --project-name
+      - "{{ ollama_project_name }}"
+      - --file
+      - "{{ ollama_install_dir }}/compose.yml"
+      - exec
+      - --no-TTY
+      - ollama
+      - printenv
+      - OLLAMA_CONTEXT_LENGTH
+  register: ollama_public_context_environment
+  changed_when: false
+  failed_when: false
+  no_log: true
+
+- name: Verify the running container uses the configured fixed context
+  ansible.builtin.assert:
+    that:
+      - ollama_public_context_environment.rc == 0
+      - ollama_public_context_environment.stdout | trim == ollama_context_length | string
+    quiet: true
+    fail_msg: The running Ollama container does not have the approved fixed context environment.
+
+- name: Read local model parameters without logging the model contents
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ ollama_port }}/api/show"
+    method: POST
+    body_format: json
+    body:
+      model: "{{ ollama_model }}"
+      verbose: false
+    status_code: 200
+    use_proxy: false
+    follow_redirects: none
+    timeout: 30
+  register: ollama_public_model_info
+  changed_when: false
+  no_log: true
+
+- name: Extract only explicit model context overrides
+  ansible.builtin.set_fact:
+    ollama_public_model_context_overrides: >-
+      {{ ollama_public_model_info.json.parameters | default('')
+         | regex_findall('(?m)^[ \t]*num_ctx(?:[ \t]+([^\r\n]*))?$')
+         | map('trim') | list }}
+  no_log: true
+
+- name: Reject model settings that can override the public context limit
+  ansible.builtin.assert:
+    that:
+      - ollama_public_model_info.json.details.format | default('') == 'gguf'
+      - ollama_public_model_info.json.remote_host | default('') == ''
+      - ollama_public_model_info.json.remote_model | default('') == ''
+      - ollama_public_model_context_overrides | length <= 1
+      - >-
+        ollama_public_model_context_overrides | length == 0 or
+        ollama_public_model_context_overrides == [ollama_context_length | string]
+    quiet: true
+    fail_msg: >-
+      Public inference requires a local GGUF model whose num_ctx parameter is
+      absent or exactly matches the configured fixed context. Other formats or
+      context overrides require an independent resource-limit review.
+
+- name: Verify OpenAI inference without injecting native context options
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ ollama_port }}/v1/chat/completions"
+    method: POST
+    body_format: json
+    body:
+      model: "{{ ollama_model }}"
+      messages:
+        - role: user
+          content: Reply with the single word READY.
+      stream: false
+      reasoning_effort: none
+      temperature: 0
+      max_tokens: 8
+    status_code: 200
+    use_proxy: false
+    follow_redirects: none
+    timeout: "{{ ollama_inference_timeout }}"
+  register: ollama_public_context_probe
+  changed_when: false
+  no_log: true
+
+- name: Confirm bounded OpenAI inference completed successfully
+  ansible.builtin.assert:
+    that:
+      - ollama_public_context_probe.json.choices | default([]) | length == 1
+      - ollama_public_context_probe.json.usage.completion_tokens | default(0) | int > 0
+      - ollama_public_context_probe.json.usage.completion_tokens | default(0) | int <= 8
+    quiet: true
+    fail_msg: The bounded OpenAI acceptance request did not generate the expected token count.
+
+- name: Read the effective runner context after OpenAI inference
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ ollama_port }}/api/ps"
+    method: GET
+    status_code: 200
+    use_proxy: false
+    follow_redirects: none
+    timeout: 10
+  register: ollama_public_context_residency
+  changed_when: false
+  no_log: true
+
+- name: Select only the configured model runner
+  ansible.builtin.set_fact:
+    ollama_public_context_models: >-
+      {{ ollama_public_context_residency.json.models
+         | selectattr('name', 'equalto', ollama_model) | list }}
+  no_log: true
+
+- name: Verify the OpenAI endpoint uses the approved fixed context
+  ansible.builtin.assert:
+    that:
+      - ollama_public_context_models | length == 1
+      - ollama_public_context_models[0].context_length | default(0) | int == ollama_context_length | int
+    quiet: true
+    fail_msg: >-
+      The OpenAI endpoint did not load the configured fixed context. Public
+      serving is refused because the request guard cannot override context
+      through Ollama's OpenAI adapter.

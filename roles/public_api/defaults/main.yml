@@ -8,3 +8,22 @@ public_api_caddy_version: 2.11.7
 public_api_request_body_bytes: 1048576
 public_api_response_timeout: 300
 public_api_upstream_port: "{{ ollama_port | default(11434) }}"
+public_api_guard_port: 11435
+public_api_context_tokens: "{{ ollama_context_length | default(4096) }}"
+public_api_output_tokens: 256
+public_api_input_bytes: 8192
+public_api_inference_body_bytes: 32768
+public_api_max_messages: 32
+public_api_inference_rpm: 6
+public_api_inference_burst: 2
+public_api_inference_concurrency: 1
+public_api_generation_timeout: 120
+# Successful credentials have a larger browsing budget for Grafana assets.
+public_api_known_per_ip_rpm: 300
+public_api_known_per_ip_burst: 80
+public_api_known_global_rpm: 600
+public_api_known_global_burst: 120
+public_api_unknown_per_ip_rpm: 5
+public_api_unknown_per_ip_burst: 2
+public_api_unknown_global_rpm: 30
+public_api_unknown_global_burst: 4

@@ -7,6 +7,7 @@ import http.server
 import ipaddress
 import json
 import os
+import re
 import secrets
 import shutil
 import socket
@@ -67,6 +68,36 @@ def test_production_config_uses_ip_profile_and_no_public_admin_api(tmp_path, mon
 def test_ip_https_authentication_and_admin_route_denial(tmp_path, monitoring):
     password = secrets.token_urlsafe(32)
     received = []
+    admission_received = []
+    block_admission = threading.Event()
+
+    class Admission(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            admission_received.append((self.path, self.headers.get("X-Guard-Client-IP"),
+                                       self.headers.get("X-Guard-User")))
+            if block_admission.is_set():
+                self.send_response(429)
+                self.send_header("Retry-After", "3")
+            else:
+                self.send_response(204)
+            self.end_headers()
+
+        def do_POST(self):
+            # The real guard has separate policy/proxy tests. This stub proves
+            # Caddy routes inference through it and overwrites trusted identity.
+            admission_received.append((self.path, self.headers.get("X-Guard-Client-IP"),
+                                       self.headers.get("X-Guard-User")))
+            assert self.headers.get("Authorization") is None
+            assert self.headers.get("Cookie") is None
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b'{"done":true}')
+
+        def log_message(self, *args):
+            pass
+
+    admission = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Admission)
+    threading.Thread(target=admission.serve_forever, daemon=True).start()
 
     class Upstream(http.server.BaseHTTPRequestHandler):
         def do_GET(self):
@@ -108,6 +139,7 @@ def test_ip_https_authentication_and_admin_route_denial(tmp_path, monitoring):
     config = config[:issuer_start] + f"    tls {cert_file} {key_file}\n" + config[issuer_end:]
     config = config.replace("https://127.0.0.1 {", f"https://127.0.0.1:{port} {{")
     config = config.replace("127.0.0.1:11434", f"127.0.0.1:{upstream.server_port}")
+    config = config.replace("127.0.0.1:11435", f"127.0.0.1:{admission.server_port}")
     config = config.replace("127.0.0.1:3000", f"127.0.0.1:{upstream.server_port}")
     config = config.replace("127.0.0.1:2019", f"127.0.0.1:{metrics_port}")
     config = config.replace("servers :443", f"servers :{port}")
@@ -120,7 +152,7 @@ def test_ip_https_authentication_and_admin_route_denial(tmp_path, monitoring):
                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=environment)
     context = ssl.create_default_context(cafile=str(cert_file))
 
-    def request(path, authenticated=False, spoof_identity=False):
+    def request(path, authenticated=False, spoof_identity=False, method="GET"):
         connection = http.client.HTTPSConnection("127.0.0.1", port, context=context, timeout=5)
         headers = {}
         if authenticated:
@@ -129,7 +161,10 @@ def test_ip_https_authentication_and_admin_route_denial(tmp_path, monitoring):
         if spoof_identity:
             headers["X-WEBAUTH-USER"] = "untrusted-client"
             headers["X-WEBAUTH-ROLE"] = "Admin"
-        connection.request("GET", path, headers=headers)
+            headers["X-Guard-User"] = "untrusted-client"
+            headers["X-Guard-Client-IP"] = "198.51.100.9"
+            headers["X-Forwarded-For"] = "198.51.100.9"
+        connection.request(method, path, headers=headers)
         response = connection.getresponse()
         status = response.status
         response.read()
@@ -146,10 +181,21 @@ def test_ip_https_authentication_and_admin_route_denial(tmp_path, monitoring):
         else:
             raise AssertionError("Local Caddy IP HTTPS listener did not become ready")
         assert status == 401
+        assert admission_received[-1] == ("/admit", "127.0.0.1", None)
         assert request("/api/tags", authenticated=True) == 200
+        assert admission_received[-1] == ("/authenticated", "127.0.0.1", "llm")
         assert request("/api/delete", authenticated=True) == 404
         assert received == [("/api/tags", None, None, None)]
         assert request("/metrics", authenticated=True) == 404
+        assert request("/admit", authenticated=True) == 404
+        assert request("/authenticated", authenticated=True) == 404
+        assert request("/api/chat", authenticated=True, spoof_identity=True, method="POST") == 200
+        assert admission_received[-1] == ("/api/chat", "127.0.0.1", "llm")
+        assert received == [("/api/tags", None, None, None)]
+        block_admission.set()
+        assert request("/api/tags", authenticated=False) == 429
+        assert request("/api/tags", authenticated=True) == 429
+        block_admission.clear()
         if monitoring:
             assert request("/grafana/api/health", spoof_identity=True) == 401
             assert request("/grafana/api/health", authenticated=True, spoof_identity=True) == 200
@@ -158,10 +204,27 @@ def test_ip_https_authentication_and_admin_route_denial(tmp_path, monitoring):
             metrics.request("GET", "/metrics")
             response = metrics.getresponse()
             assert response.status == 200
-            assert b"caddy_http_requests_total" in response.read()
+            samples = response.read()
+            assert b"caddy_http_requests_total" in samples
+            # The pinned Caddy wraps the outer route. Validate the live label
+            # used by the dashboard rather than merely accepting query syntax.
+            assert re.search(
+                rb'caddy_http_request_duration_seconds_count\{[^}\n]*handler="subroute"'
+                rb'[^}\n]*server="public_gateway"[^}\n]*\}', samples
+            )
+            dashboard = json.loads((ROOT / "roles/monitoring/files/dashboards/gateway.json").read_text())
+            caddy_queries = [target["expr"] for panel in dashboard["panels"]
+                             for target in panel.get("targets", []) if "caddy_http_" in target.get("expr", "")]
+            assert caddy_queries and all('handler="subroute"' in query for query in caddy_queries)
             metrics.close()
+        # If the guard is down, neither the catalogue nor inference bypasses it.
+        admission.shutdown()
+        admission.server_close()
+        assert request("/api/tags", authenticated=True) == 502
     finally:
         process.terminate()
         process.wait(timeout=10)
         upstream.shutdown()
         upstream.server_close()
+        admission.shutdown()
+        admission.server_close()

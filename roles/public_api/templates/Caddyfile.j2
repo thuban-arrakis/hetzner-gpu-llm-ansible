@@ -35,8 +35,30 @@ https://{{ public_api_address }} {
         Cache-Control no-store
     }
     route {
+        # Cheap bounded admission runs before bcrypt. The guard learns only
+        # credential digests after Caddy has authenticated the original request.
+        forward_auth 127.0.0.1:{{ public_api_guard_port }} {
+            uri /admit?
+            header_up X-Guard-Client-IP {http.request.remote.host}
+            header_up -X-Guard-User
+            header_up -Cookie
+            transport http {
+                dial_timeout 1s
+                response_header_timeout 2s
+            }
+        }
         basic_auth {
             {{ public_api_username }} {{ lookup('protected_bcrypt', public_api_password_hash_file) }}
+        }
+        forward_auth 127.0.0.1:{{ public_api_guard_port }} {
+            uri /authenticated?
+            header_up X-Guard-Client-IP {http.request.remote.host}
+            header_up X-Guard-User {{ public_api_username }}
+            header_up -Cookie
+            transport http {
+                dial_timeout 1s
+                response_header_timeout 2s
+            }
         }
         request_body {
             max_size {{ public_api_request_body_bytes }}
@@ -49,6 +71,8 @@ https://{{ public_api_address }} {
                 header_up X-WEBAUTH-USER {{ public_api_username }}
                 header_up -X-WEBAUTH-ROLE
                 header_up -Authorization
+                header_up -X-Guard-User
+                header_up -X-Guard-Client-IP
                 transport http {
                     dial_timeout 5s
                     response_header_timeout 60s
@@ -68,6 +92,8 @@ https://{{ public_api_address }} {
             reverse_proxy 127.0.0.1:{{ public_api_upstream_port }} {
                 header_up -Authorization
                 header_up -Cookie
+                header_up -X-Guard-User
+                header_up -X-Guard-Client-IP
                 transport http {
                     dial_timeout 5s
                     response_header_timeout 15s
@@ -75,9 +101,11 @@ https://{{ public_api_address }} {
             }
         }
         handle @inference {
-            reverse_proxy 127.0.0.1:{{ public_api_upstream_port }} {
+            reverse_proxy 127.0.0.1:{{ public_api_guard_port }} {
                 header_up -Authorization
                 header_up -Cookie
+                header_up X-Guard-User {{ public_api_username }}
+                header_up X-Guard-Client-IP {http.request.remote.host}
                 transport http {
                     dial_timeout 5s
                     response_header_timeout {{ public_api_response_timeout }}s

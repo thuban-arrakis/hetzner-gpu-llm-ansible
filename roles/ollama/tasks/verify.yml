@@ -30,6 +30,29 @@
       accepts a different artifact when a digest is configured.
   when: ollama_model_digest | length > 0
 
+- name: Verify the public OpenAI adapter cannot enlarge the model context
+  when: public_api_enabled | default(false) | bool
+  block:
+    - name: Check the public endpoint model and effective context limits
+      ansible.builtin.include_tasks: public_limits.yml
+  rescue:
+    - name: Find the installed public request guard service
+      ansible.builtin.service_facts:
+
+    - name: Stop and disable the public request guard after a failed limit check
+      ansible.builtin.systemd_service:
+        name: llm-api-guard.service
+        enabled: false
+        state: stopped
+      when: "'llm-api-guard.service' in ansible_facts.services"
+
+    - name: Report failed public resource limit acceptance
+      ansible.builtin.fail:
+        msg: >-
+          Public resource limit acceptance failed. The installed public request
+          guard has been stopped and disabled. Correct the model and context
+          configuration, then rerun the playbook before restoring public access.
+
 - name: Run a real local inference request
   ansible.builtin.uri:
     url: "http://127.0.0.1:{{ ollama_port }}/api/generate"

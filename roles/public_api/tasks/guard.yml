@@ -1,0 +1,144 @@
+---
+- name: Install the distribution Go compiler and firewall tooling
+  ansible.builtin.apt:
+    name: [golang-go, iptables]
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+    lock_timeout: 120
+  register: public_api_guard_compiler
+
+- name: Create the admission service group
+  ansible.builtin.group:
+    name: llm-api-guard
+    system: true
+
+- name: Create the unprivileged admission service account
+  ansible.builtin.user:
+    name: llm-api-guard
+    group: llm-api-guard
+    system: true
+    create_home: false
+    home: /nonexistent
+    shell: /usr/sbin/nologin
+
+- name: Create root-managed admission directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - /etc/llm-api-guard
+    - /usr/local/lib/llm-api-guard
+    - /usr/local/lib/llm-api-guard/src
+    - /usr/local/libexec
+    - /var/cache/llm-api-guard
+
+- name: Install the admission proxy source
+  ansible.builtin.copy:
+    src: api_guard/
+    dest: /usr/local/lib/llm-api-guard/src/
+    owner: root
+    group: root
+    mode: "0644"
+    directory_mode: "0755"
+  register: public_api_guard_source
+
+- name: Check the admission service binary
+  ansible.builtin.stat:
+    path: /usr/local/libexec/llm-api-guard
+  register: public_api_guard_binary
+
+- name: Compile the standard-library-only admission service without dependency downloads
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/go
+      - build
+      - -trimpath
+      - -ldflags=-s -w
+      - -o
+      - /usr/local/libexec/llm-api-guard
+      - .
+    chdir: /usr/local/lib/llm-api-guard/src
+  environment:
+    CGO_ENABLED: "0"
+    GOTOOLCHAIN: local
+    GOPROXY: "off"
+    GOSUMDB: "off"
+    GOCACHE: /var/cache/llm-api-guard/build
+    GOPATH: /var/cache/llm-api-guard/go
+  changed_when: true
+  when:
+    - not ansible_check_mode
+    - public_api_guard_source.changed or public_api_guard_compiler.changed or not public_api_guard_binary.stat.exists
+  notify: Pause bounded admission for model acceptance
+
+- name: Install the admission policy
+  ansible.builtin.template:
+    src: guard-config.json.j2
+    dest: /etc/llm-api-guard/config.json
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Pause bounded admission for model acceptance
+
+- name: Record the approved model artifact for admission rollout changes
+  ansible.builtin.copy:
+    content: "{{ ollama_model_digest }}\n"
+    dest: /etc/llm-api-guard/model-digest
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Pause bounded admission for model acceptance
+
+- name: Install the connection guard
+  ansible.builtin.copy:
+    src: connection_guard.py
+    dest: /usr/local/libexec/llm-connection-guard
+    owner: root
+    group: root
+    mode: "0755"
+  notify: Apply public connection limits
+
+- name: Install admission and connection guard units
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/etc/systemd/system/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: [llm-api-guard.service, llm-connection-guard.service]
+  register: public_api_guard_units
+  notify:
+    - Pause bounded admission for model acceptance
+    - Apply public connection limits
+
+- name: Load admission units before final inference verification
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+  when:
+    - public_api_guard_units.changed
+    - not ansible_check_mode
+
+- name: Record whether NVIDIA containers need to reopen devices after the systemd reload
+  ansible.builtin.set_fact:
+    public_api_systemd_reload_performed: "{{ public_api_guard_units.changed and not ansible_check_mode }}"
+
+- name: Apply admission policy before exposing the updated gateway
+  ansible.builtin.meta: flush_handlers
+
+- name: Enable connection limits at boot
+  ansible.builtin.systemd_service:
+    name: llm-connection-guard.service
+    enabled: true
+    state: started
+  when: not ansible_check_mode
+
+- name: Reconcile connection limits after any preceding UFW changes
+  ansible.builtin.command:
+    argv: [/usr/bin/python3, /usr/local/libexec/llm-connection-guard, --install]
+  register: public_api_connection_guard
+  changed_when: public_api_connection_guard.stdout | trim == 'connection_guard_changed'
+  when: not ansible_check_mode

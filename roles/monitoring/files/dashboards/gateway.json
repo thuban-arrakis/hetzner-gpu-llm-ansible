@@ -2,13 +2,13 @@
   "id": null,
   "uid": "llm-gateway",
   "title": "LLM \u00b7 HTTPS gateway",
-  "description": "Actual combined API and Grafana HTTPS proxy traffic, with explicit middleware and listener boundaries.",
+  "description": "Public request admission, bounded inference and Caddy gateway request metrics. API and Grafana share the public route; server handling durations include authentication and response streaming.",
   "tags": [
     "llm-monitoring"
   ],
   "timezone": "browser",
   "schemaVersion": 39,
-  "version": 1,
+  "version": 3,
   "refresh": "30s",
   "editable": false,
   "graphTooltip": 1,
@@ -62,7 +62,7 @@
   "panels": [
     {
       "id": 1,
-      "title": "Combined gateway traffic",
+      "title": "Admission checks and gateway requests",
       "type": "text",
       "gridPos": {
         "x": 0,
@@ -73,7 +73,7 @@
       "description": "",
       "options": {
         "mode": "markdown",
-        "content": "**These real Caddy metrics combine proxied API and Grafana requests. They are not LLM-only request totals.** Queries select the public gateway and exactly one middleware (`reverse_proxy`) to avoid counting each request multiple times. Requests rejected before proxying, including failed authentication, are excluded. The private metrics/admin listener is excluded."
+        "content": "**Guard admission checks cover public API and Grafana traffic before authentication.** They count requests reaching the admission handler; earlier connection, header and handler-cap rejections are excluded. Inference counters cover real public inference attempts, not synthetic probes or successful completions. **Caddy charts select the measured top-level public route (`handler=\"subroute\"`)** and combine API and Grafana requests, including authentication failures and guard rejections. Durations measure server handling through that route, including authentication, upstream work and streamed responses. They are not client end-to-end latency or LLM-only response time. Private metrics listeners are excluded."
       }
     },
     {
@@ -157,7 +157,7 @@
     },
     {
       "id": 3,
-      "title": "Completed proxied requests \u00b7 range",
+      "title": "Admission checks \u00b7 range",
       "type": "stat",
       "gridPos": {
         "x": 6,
@@ -165,7 +165,7 @@
         "w": 6,
         "h": 4
       },
-      "description": "",
+      "description": "Increase in real admission-handler calls for API and Grafana traffic, including requests later rejected. Counter increases are estimated from scrapes; they are not completed-request totals.",
       "datasource": {
         "type": "prometheus",
         "uid": "victoriametrics"
@@ -195,7 +195,7 @@
             "type": "prometheus",
             "uid": "victoriametrics"
           },
-          "expr": "sum(increase(caddy_http_request_duration_seconds_count{job=\"caddy\",server=\"public_gateway\",handler=\"reverse_proxy\"}[$__range]))",
+          "expr": "sum(increase(llm_guard_admissions_total{job=\"api_guard\"}[$__range]))",
           "legendFormat": "",
           "refId": "A",
           "range": false,
@@ -221,7 +221,7 @@
     },
     {
       "id": 4,
-      "title": "Current proxied requests / second",
+      "title": "Admission checks / second",
       "type": "stat",
       "gridPos": {
         "x": 12,
@@ -229,7 +229,7 @@
         "w": 6,
         "h": 4
       },
-      "description": "",
+      "description": "Requests reaching the admission handler before authentication. Excludes rejections before that handler.",
       "datasource": {
         "type": "prometheus",
         "uid": "victoriametrics"
@@ -259,7 +259,7 @@
             "type": "prometheus",
             "uid": "victoriametrics"
           },
-          "expr": "sum(rate(caddy_http_requests_total{job=\"caddy\",server=\"public_gateway\",handler=\"reverse_proxy\"}[5m]))",
+          "expr": "sum(rate(llm_guard_admissions_total{job=\"api_guard\"}[5m]))",
           "legendFormat": "",
           "refId": "A",
           "range": false,
@@ -285,7 +285,7 @@
     },
     {
       "id": 5,
-      "title": "Mean completed request duration \u00b7 5m",
+      "title": "Mean gateway handling duration \u00b7 5m",
       "type": "stat",
       "gridPos": {
         "x": 18,
@@ -293,7 +293,7 @@
         "w": 6,
         "h": 4
       },
-      "description": "Round-trip duration, including streamed responses. No traffic means N/A.",
+      "description": "Mean server handling duration for completed requests through the public top-level route. Includes authentication, API/Grafana upstream work and response streaming. Not client end-to-end latency or LLM-only response time; no completed traffic means N/A.",
       "datasource": {
         "type": "prometheus",
         "uid": "victoriametrics"
@@ -323,7 +323,278 @@
             "type": "prometheus",
             "uid": "victoriametrics"
           },
-          "expr": "sum(rate(caddy_http_request_duration_seconds_sum{job=\"caddy\",server=\"public_gateway\",handler=\"reverse_proxy\"}[5m])) / sum(rate(caddy_http_request_duration_seconds_count{job=\"caddy\",server=\"public_gateway\",handler=\"reverse_proxy\"}[5m]))",
+          "expr": "sum(rate(caddy_http_request_duration_seconds_sum{job=\"caddy\",server=\"public_gateway\",handler=\"subroute\"}[5m])) / sum(rate(caddy_http_request_duration_seconds_count{job=\"caddy\",server=\"public_gateway\",handler=\"subroute\"}[5m]))",
+          "legendFormat": "",
+          "refId": "A",
+          "range": false,
+          "instant": true,
+          "format": "time_series",
+          "editorMode": "code"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "textMode": "value",
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto"
+      }
+    },
+    {
+      "id": 12,
+      "title": "Admission guard exporter",
+      "type": "stat",
+      "gridPos": {
+        "x": 0,
+        "y": 8,
+        "w": 6,
+        "h": 4
+      },
+      "description": "Scrape health of the private admission and inference guard metrics endpoint.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "victoriametrics"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "N/A",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "Down",
+                  "color": "red"
+                },
+                "1": {
+                  "text": "Healthy",
+                  "color": "green"
+                }
+              }
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "victoriametrics"
+          },
+          "expr": "up{job=\"api_guard\"}",
+          "legendFormat": "",
+          "refId": "A",
+          "range": false,
+          "instant": true,
+          "format": "time_series",
+          "editorMode": "code"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "textMode": "value",
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto"
+      }
+    },
+    {
+      "id": 13,
+      "title": "Pre-auth admission 429s \u00b7 range",
+      "type": "stat",
+      "gridPos": {
+        "x": 6,
+        "y": 8,
+        "w": 6,
+        "h": 4
+      },
+      "description": "Requests denied by the admission rate or IP-cache limits before bcrypt authentication. Does not include connection limits or the general handler-cap rejections.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "victoriametrics"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "N/A",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "victoriametrics"
+          },
+          "expr": "sum(increase(llm_guard_preauth_rejections_total{job=\"api_guard\"}[$__range]))",
+          "legendFormat": "",
+          "refId": "A",
+          "range": false,
+          "instant": true,
+          "format": "time_series",
+          "editorMode": "code"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "textMode": "value",
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto"
+      }
+    },
+    {
+      "id": 14,
+      "title": "Inference rate/concurrency 429s \u00b7 range",
+      "type": "stat",
+      "gridPos": {
+        "x": 12,
+        "y": 8,
+        "w": 6,
+        "h": 4
+      },
+      "description": "Authenticated public inference attempts rejected because the inference slot is occupied or the token-bucket rate limit is exhausted. Not authentication failures.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "victoriametrics"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "N/A",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "victoriametrics"
+          },
+          "expr": "sum(increase(llm_guard_inference_rejections_total{job=\"api_guard\"}[$__range]))",
+          "legendFormat": "",
+          "refId": "A",
+          "range": false,
+          "instant": true,
+          "format": "time_series",
+          "editorMode": "code"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "textMode": "value",
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto"
+      }
+    },
+    {
+      "id": 15,
+      "title": "Inference payload rejections \u00b7 range",
+      "type": "stat",
+      "gridPos": {
+        "x": 18,
+        "y": 8,
+        "w": 6,
+        "h": 4
+      },
+      "description": "Inference bodies rejected for size, encoding, JSON schema, model, input or option restrictions. Earlier Caddy body-size rejections are not included.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "victoriametrics"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "N/A",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "victoriametrics"
+          },
+          "expr": "sum(increase(llm_guard_payload_rejections_total{job=\"api_guard\"}[$__range]))",
           "legendFormat": "",
           "refId": "A",
           "range": false,
@@ -349,15 +620,15 @@
     },
     {
       "id": 6,
-      "title": "Proxied request rate \u00b7 API + Grafana",
+      "title": "Admission and public inference attempt rates",
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 8,
+        "y": 12,
         "w": 12,
         "h": 8
       },
-      "description": "",
+      "description": "Admission checks include API and Grafana requests. Inference attempts reach the authenticated inference handler before rate, concurrency or payload validation, so they include rejected attempts. Synthetic monitoring probes bypass this guard.",
       "datasource": {
         "type": "prometheus",
         "uid": "victoriametrics"
@@ -403,9 +674,22 @@
             "type": "prometheus",
             "uid": "victoriametrics"
           },
-          "expr": "sum(rate(caddy_http_requests_total{job=\"caddy\",server=\"public_gateway\",handler=\"reverse_proxy\"}[5m]))",
-          "legendFormat": "requests/s",
+          "expr": "sum(rate(llm_guard_admissions_total{job=\"api_guard\"}[5m]))",
+          "legendFormat": "admission checks/s",
           "refId": "A",
+          "range": true,
+          "instant": false,
+          "format": "time_series",
+          "editorMode": "code"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "victoriametrics"
+          },
+          "expr": "sum(rate(llm_guard_inference_requests_total{job=\"api_guard\"}[5m]))",
+          "legendFormat": "inference attempts/s",
+          "refId": "B",
           "range": true,
           "instant": false,
           "format": "time_series",
@@ -426,15 +710,15 @@
     },
     {
       "id": 7,
-      "title": "Completed response rate by HTTP status",
+      "title": "Completed gateway requests by HTTP status",
       "type": "timeseries",
       "gridPos": {
         "x": 12,
-        "y": 8,
+        "y": 12,
         "w": 12,
         "h": 8
       },
-      "description": "",
+      "description": "Completed requests through the public top-level route, grouped by its HTTP response status. Includes API and Grafana traffic, authentication failures and guard rejections. Connections rejected before entering the route are excluded.",
       "datasource": {
         "type": "prometheus",
         "uid": "victoriametrics"
@@ -480,7 +764,7 @@
             "type": "prometheus",
             "uid": "victoriametrics"
           },
-          "expr": "sum by (code) (rate(caddy_http_request_duration_seconds_count{job=\"caddy\",server=\"public_gateway\",handler=\"reverse_proxy\"}[5m]))",
+          "expr": "sum by (code) (rate(caddy_http_request_duration_seconds_count{job=\"caddy\",server=\"public_gateway\",handler=\"subroute\"}[5m]))",
           "legendFormat": "HTTP {{code}}",
           "refId": "A",
           "range": true,
@@ -503,15 +787,15 @@
     },
     {
       "id": 8,
-      "title": "5xx fraction of completed proxied requests",
+      "title": "5xx fraction of completed gateway requests",
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 16,
+        "y": 20,
         "w": 12,
         "h": 8
       },
-      "description": "No completed traffic means N/A. This includes API and Grafana upstream failures, not just model inference failures.",
+      "description": "Fraction of completed public gateway requests returning 5xx across API and Grafana traffic. Includes authentication/admission service and upstream failures; not an LLM-only error rate. No completed traffic means N/A.",
       "datasource": {
         "type": "prometheus",
         "uid": "victoriametrics"
@@ -557,8 +841,8 @@
             "type": "prometheus",
             "uid": "victoriametrics"
           },
-          "expr": "100 * (sum(rate(caddy_http_request_duration_seconds_count{job=\"caddy\",server=\"public_gateway\",handler=\"reverse_proxy\",code=~\"5..\"}[5m])) or vector(0)) / sum(rate(caddy_http_request_duration_seconds_count{job=\"caddy\",server=\"public_gateway\",handler=\"reverse_proxy\"}[5m]))",
-          "legendFormat": "5xx fraction",
+          "expr": "100 * (sum(rate(caddy_http_request_duration_seconds_count{job=\"caddy\",server=\"public_gateway\",handler=\"subroute\",code=~\"5..\"}[5m])) or vector(0)) / sum(rate(caddy_http_request_duration_seconds_count{job=\"caddy\",server=\"public_gateway\",handler=\"subroute\"}[5m]))",
+          "legendFormat": "gateway requests returning 5xx",
           "refId": "A",
           "range": true,
           "instant": false,
@@ -580,15 +864,15 @@
     },
     {
       "id": 9,
-      "title": "Mean completed proxied request duration",
+      "title": "Mean completed gateway handling duration",
       "type": "timeseries",
       "gridPos": {
         "x": 12,
-        "y": 16,
+        "y": 20,
         "w": 12,
         "h": 8
       },
-      "description": "Mean derived from Caddy duration sum/count. This is not a latency percentile and includes entire streaming requests.",
+      "description": "Mean server handling duration for completed requests through the public top-level route. Includes authentication, API/Grafana upstream work and response streaming. Not client end-to-end latency or LLM-only response time; no completed traffic means N/A.",
       "datasource": {
         "type": "prometheus",
         "uid": "victoriametrics"
@@ -634,8 +918,8 @@
             "type": "prometheus",
             "uid": "victoriametrics"
           },
-          "expr": "sum(rate(caddy_http_request_duration_seconds_sum{job=\"caddy\",server=\"public_gateway\",handler=\"reverse_proxy\"}[5m])) / sum(rate(caddy_http_request_duration_seconds_count{job=\"caddy\",server=\"public_gateway\",handler=\"reverse_proxy\"}[5m]))",
-          "legendFormat": "mean duration",
+          "expr": "sum(rate(caddy_http_request_duration_seconds_sum{job=\"caddy\",server=\"public_gateway\",handler=\"subroute\"}[5m])) / sum(rate(caddy_http_request_duration_seconds_count{job=\"caddy\",server=\"public_gateway\",handler=\"subroute\"}[5m]))",
+          "legendFormat": "mean server handling duration",
           "refId": "A",
           "range": true,
           "instant": false,
@@ -657,15 +941,15 @@
     },
     {
       "id": 10,
-      "title": "Proxied requests in flight",
+      "title": "Inference slot occupancy",
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 24,
+        "y": 28,
         "w": 12,
         "h": 8
       },
-      "description": "",
+      "description": "Guard concurrency slots currently occupied, including request validation, upstream generation and response streaming. The configured public concurrency limit is one. This is not a GPU utilization or model execution gauge.",
       "datasource": {
         "type": "prometheus",
         "uid": "victoriametrics"
@@ -701,7 +985,9 @@
               "mode": "none",
               "group": "A"
             }
-          }
+          },
+          "min": 0,
+          "max": 1
         },
         "overrides": []
       },
@@ -711,8 +997,8 @@
             "type": "prometheus",
             "uid": "victoriametrics"
           },
-          "expr": "sum(caddy_http_requests_in_flight{job=\"caddy\",server=\"public_gateway\",handler=\"reverse_proxy\"})",
-          "legendFormat": "in flight",
+          "expr": "sum(llm_guard_inflight{job=\"api_guard\"})",
+          "legendFormat": "occupied inference slots",
           "refId": "A",
           "range": true,
           "instant": false,
@@ -734,15 +1020,15 @@
     },
     {
       "id": 11,
-      "title": "4xx response fraction",
+      "title": "4xx fraction of completed gateway requests",
       "type": "timeseries",
       "gridPos": {
         "x": 12,
-        "y": 24,
+        "y": 28,
         "w": 12,
         "h": 8
       },
-      "description": "Only responses that reached reverse_proxy. Basic-auth rejections happen earlier and are not represented.",
+      "description": "Fraction of completed public gateway requests returning 4xx, including authentication failures, guard rejections and API/Grafana responses. Connections rejected before entering the top-level route are excluded.",
       "datasource": {
         "type": "prometheus",
         "uid": "victoriametrics"
@@ -788,9 +1074,125 @@
             "type": "prometheus",
             "uid": "victoriametrics"
           },
-          "expr": "100 * (sum(rate(caddy_http_request_duration_seconds_count{job=\"caddy\",server=\"public_gateway\",handler=\"reverse_proxy\",code=~\"4..\"}[5m])) or vector(0)) / sum(rate(caddy_http_request_duration_seconds_count{job=\"caddy\",server=\"public_gateway\",handler=\"reverse_proxy\"}[5m]))",
-          "legendFormat": "4xx fraction",
+          "expr": "100 * (sum(rate(caddy_http_request_duration_seconds_count{job=\"caddy\",server=\"public_gateway\",handler=\"subroute\",code=~\"4..\"}[5m])) or vector(0)) / sum(rate(caddy_http_request_duration_seconds_count{job=\"caddy\",server=\"public_gateway\",handler=\"subroute\"}[5m]))",
+          "legendFormat": "gateway requests returning 4xx",
           "refId": "A",
+          "range": true,
+          "instant": false,
+          "format": "time_series",
+          "editorMode": "code"
+        }
+      ],
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 16,
+      "title": "Guard rejection rates",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 0,
+        "y": 36,
+        "w": 24,
+        "h": 8
+      },
+      "description": "Separate guard counter categories. Pre-auth and inference admission limits return 429; payload validation returns 400/413/415. Handler-cap rejections cover all private guard routes and are not inferred to be LLM-only.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "victoriametrics"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "noValue": "N/A",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": false,
+            "axisPlacement": "auto",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "victoriametrics"
+          },
+          "expr": "sum(rate(llm_guard_preauth_rejections_total{job=\"api_guard\"}[5m]))",
+          "legendFormat": "pre-auth admission 429/s",
+          "refId": "A",
+          "range": true,
+          "instant": false,
+          "format": "time_series",
+          "editorMode": "code"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "victoriametrics"
+          },
+          "expr": "sum(rate(llm_guard_inference_rejections_total{job=\"api_guard\"}[5m]))",
+          "legendFormat": "inference rate/concurrency 429/s",
+          "refId": "B",
+          "range": true,
+          "instant": false,
+          "format": "time_series",
+          "editorMode": "code"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "victoriametrics"
+          },
+          "expr": "sum(rate(llm_guard_payload_rejections_total{job=\"api_guard\"}[5m]))",
+          "legendFormat": "invalid inference payloads/s",
+          "refId": "C",
+          "range": true,
+          "instant": false,
+          "format": "time_series",
+          "editorMode": "code"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "victoriametrics"
+          },
+          "expr": "sum(rate(llm_guard_handler_limit_rejections_total{job=\"api_guard\"}[5m]))",
+          "legendFormat": "all guard handler-cap 429/s",
+          "refId": "D",
           "range": true,
           "instant": false,
           "format": "time_series",

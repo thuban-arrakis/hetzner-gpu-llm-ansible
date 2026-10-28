@@ -13,6 +13,15 @@
       - public_api_response_timeout | int <= 600
       - public_api_upstream_port | int >= 1024
       - public_api_upstream_port | int <= 65535
+      - public_api_guard_port | int >= 1024
+      - public_api_guard_port | int <= 65535
+      - public_api_guard_port | int != public_api_upstream_port | int
+      - public_api_context_tokens | int == ollama_context_length | int
+      - public_api_context_tokens | int >= 512
+      - public_api_context_tokens | int <= 32768
+      - public_api_output_tokens | int >= 1
+      - public_api_output_tokens | int <= public_api_context_tokens | int
+      - public_api_generation_timeout | int < public_api_response_timeout | int
     fail_msg: Set a public IPv4 address, safe username and protected external bcrypt file before enabling HTTPS.
 
 - name: Require a globally routable IPv4 address for public certificate issuance
@@ -78,39 +87,8 @@
     group: caddy
     mode: "0750"
 
-- name: Install and validate the authenticated inference-only gateway
-  ansible.builtin.template:
-    src: Caddyfile.j2
-    dest: /etc/caddy/Caddyfile
-    owner: root
-    group: caddy
-    mode: "0640"
-    validate: /usr/bin/caddy validate --config %s --adapter caddyfile
-  no_log: true
-  diff: false
-  notify: Restart authenticated HTTPS gateway
+- name: Install bounded admission before public request routing
+  ansible.builtin.import_tasks: guard.yml
 
-- name: Apply the authenticated configuration before inference startup
-  ansible.builtin.meta: flush_handlers
-
-- name: Enable HTTPS startup and automatic certificate renewal
-  ansible.builtin.systemd_service:
-    name: caddy.service
-    enabled: true
-    state: started
-  when: not ansible_check_mode
-
-- name: Verify public TLS and refusal of unauthenticated requests
-  ansible.builtin.uri:
-    url: "https://{{ public_api_address }}/api/tags"
-    method: GET
-    status_code: 401
-    validate_certs: true
-    follow_redirects: none
-    use_proxy: false
-    timeout: 15
-  register: public_api_tls_check
-  until: public_api_tls_check.status | default(0) == 401
-  retries: 30
-  delay: 10
-  when: not ansible_check_mode
+- name: Apply the authenticated gateway configuration
+  ansible.builtin.import_tasks: gateway.yml

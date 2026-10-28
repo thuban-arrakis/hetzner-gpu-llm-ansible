@@ -39,7 +39,8 @@ flowchart LR
     O --> G[Explicit CPU mode or NVIDIA GPU]
     O --> V[Persistent model storage]
     P[Optional public IPv4 HTTPS client] -->|TLS + Basic authentication| T[Caddy inference gateway]
-    T --> A
+    T -->|Pre-auth admission and validated inference| Q[Local request guard]
+    Q --> A
     T -->|Authenticated /grafana/| D[Grafana dashboards and alerts]
     D --> M[VictoriaMetrics]
     M --> E[Host, LLM, gateway and optional GPU collectors]
@@ -251,16 +252,77 @@ curl --disable --config "$DEMO_DIR/client/client.curl" \
   --data '{"model":"qwen3:4b-q4_K_M","messages":[{"role":"user","content":"Say hello."}],"stream":false,"think":false,"options":{"num_predict":64}}'
 ```
 
-Unauthenticated requests receive HTTP 401. Authenticated inference clients may call
+Unauthenticated requests normally receive HTTP 401; repeated attempts receive
+429 when their admission budget is exhausted. Authenticated inference clients may call
 `GET /api/tags`, `GET /v1/models`, and `POST /api/chat`, `/api/generate`,
 `/v1/chat/completions`, `/v1/completions`; model administration returns 404.
-The gateway strips authorization/cookie headers before forwarding inference requests to loopback,
-limits request bodies to 1 MiB, and bounds response time to five minutes.
-There are no access or prompt logs. This is a single trusted test-client setup:
-Ollama's one-request concurrency and bounded queue are not per-client quotas.
-Add a dedicated quota/rate-limiting gateway or mTLS/OIDC before sharing broadly.
+The gateway strips authorization/cookie headers before forwarding inference requests
+to the local request guard. The guard applies the policy below and forwards only
+validated requests to Ollama. There are no access, credential, or prompt logs.
 When monitoring is enabled, `/grafana/` also permits the authenticated dashboard
 application routes and preserves Grafana's cookies.
+
+### Request admission and inference limits
+
+The public gateway checks cheap admission rules **before bcrypt authentication**.
+Source addresses come from the TCP peer; caller-supplied forwarding and guard
+headers cannot choose an identity or bypass a bucket. Missing, malformed, and
+previously unverified credentials share a low admission budget. After Caddy
+validates a credential, the guard caches only its SHA-256 digest for 60 seconds
+to permit normal Grafana asset loading. Caddy still authenticates every request.
+No plaintext credential is cached by the guard or written to disk.
+
+| Control | Default / live CPU demo |
+|---|---|
+| Unknown credentials, per IP | 5/min sustained, burst 2 |
+| Unknown credentials, globally | 30/min sustained, burst 4 |
+| General requests, per IP | 300/min sustained, burst 80 |
+| General requests, globally | 600/min sustained, burst 120 |
+| Authenticated generation, per account and globally | 6/min sustained, burst 2 |
+| Active public generation | 1; busy requests are rejected without queuing |
+| Inference request body | 32 KiB |
+| Combined text input | 8 KiB; at most 32 messages |
+| Context allocation | Fixed at `ollama_context_length`: 2,048 tokens on the demo |
+| Generated tokens | 256 maximum, including when the caller omits the limit |
+| Generation deadline | 120 seconds, covering the upstream operation |
+
+Rates use token buckets, so a short burst is allowed; these are not rolling-window
+request counts. Throttled or busy requests return **429** with `Retry-After`.
+Invalid payloads return **400**, bodies exceeding the byte limit return **413**,
+and unsupported content types or compression return **415**.
+The text-byte limit is not a tokenizer-based prompt-token count. The fixed context
+allocation bounds the model context; Ollama's normal prompt truncation still applies.
+
+The guard accepts only the configured model and a text-only subset of native
+Ollama and OpenAI-compatible requests. It rebuilds JSON from allowed fields;
+duplicate keys, extra JSON values, unknown options, compressed bodies, images,
+tools, templates, raw mode, caller-supplied context arrays and model-loading
+overrides are rejected. Thinking is disabled for this bounded demo. Native
+`num_ctx` cannot exceed the configured context and is normalized to that fixed
+allocation; `num_predict`, OpenAI `max_tokens`, and the accepted
+`max_completion_tokens` alias cannot exceed the output cap. Public OpenAI requests
+cannot override context; deployment checks the backend environment, model
+parameters, and effective context after an actual OpenAI inference.
+
+Streaming remains supported. Slots are held through the response and released on
+completion, disconnect, or deadline. The guard also bounds handler count, bucket
+cardinality, response bytes and its own memory/CPU use. If it fails, Caddy rejects
+requests; there is no direct inference fallback. Its listener and metrics remain
+on loopback (`127.0.0.1:11435`).
+
+A separate boot-enabled connection guard limits new TCP connection attempts to
+ports 80/443: 40/second per address family (burst 80), 8/second per IP (burst 16), 32 simultaneous
+connections per IP, and 256 per IP family overall. It manages only its own INPUT
+chain; SSH, established traffic, ICMP and other firewall rules are unchanged.
+Connection excess is dropped at the firewall, before TLS processing.
+Changed admission policies and backend configurations pause public serving until
+model/context acceptance succeeds. Failed checks leave admission stopped and
+disabled; a corrected, successful deployment re-enables it.
+
+These controls reduce application abuse and connection bursts on this single
+server. They cannot absorb attacks that saturate its upstream link. Multiple users
+sharing the demo password also share its account quota; use distinct identities
+and an upstream filtering service for a wider public deployment.
 
 For rotation, generate a new directory and update the inventory hash reference,
 then rerun Ansible and replace the client's protected file. To close public
@@ -291,10 +353,14 @@ Grafana uses the Prometheus-compatible datasource protocol to query it.
 | Node exporter | `127.0.0.1:9100` | Host CPU, memory, disk and network |
 | LLM exporter | `127.0.0.1:9400` | Cached model health and bounded inference probes |
 | Caddy metrics | `127.0.0.1:2019` | Gateway counters and latency; admin API remains off |
+| Admission guard | `127.0.0.1:11435` | Private policy checks, inference proxy and rejection metrics |
 
 Five provisioned dashboards cover **Host**, **Inference**, **GPU**, **Gateway**,
-and **Alerts**. Gateway metrics represent proxied API and Grafana traffic,
-not exclusively LLM requests. GPU panels explicitly show CPU mode/no GPU data
+and **Alerts**. Guard metrics show real admission attempts, throttling, rejected
+payloads and inference occupancy. Caddy charts select the observed top-level
+`subroute` handler: completed public gateway requests and server handling time,
+including authentication, admission and streaming. They combine API and Grafana
+traffic and do not measure client end-to-end latency. GPU panels show CPU mode/no GPU data
 on the demo instead of fabricating zero-valued GPU measurements.
 
 Nineteen Grafana-managed rules cover scrape failures, CPU/memory/disk pressure,
@@ -455,6 +521,8 @@ be billable according to the account's GitHub plan.
 ansible-playbook -i inventory/example.yml playbooks/deploy.yml --syntax-check
 ansible-lint
 TMPDIR="$DEMO_DIR" python -m pytest -q --basetemp="$DEMO_DIR/pytest"
+GOCACHE="$DEMO_DIR/go-cache" GOPATH="$DEMO_DIR/go" GOTOOLCHAIN=local \
+  GOPROXY=off GOSUMDB=off go -C roles/public_api/files/api_guard test -race ./...
 terraform -chdir=terraform fmt -check -recursive
 terraform -chdir=terraform init -backend=false -input=false -lockfile=readonly
 terraform -chdir=terraform validate
@@ -491,8 +559,8 @@ For a larger deployment:
   diagnostics, and move VictoriaMetrics/alert evaluation to an independent host.
   Configure notification delivery and monitor certificate expiry externally.
 - Extend the authenticated TLS gateway for application clients with mTLS or
-  OIDC, per-client quotas, request/context limits, and rate
-  limiting. Expose inference routes only; keep model pull/delete administration
+  OIDC and distinct client identities with separate budgets. Tune the admission
+  and inference limits using observed latency. Keep model pull/delete administration
   private. Do not simply publish Ollama's raw port.
 - Use vLLM when continuous batching and multi-GPU throughput justify its greater
   model/runtime complexity. Benchmark time-to-first-token and tokens/second on

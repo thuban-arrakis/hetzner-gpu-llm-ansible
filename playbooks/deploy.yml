@@ -33,3 +33,11 @@
     - role: public_api
       when: public_api_enabled | default(false) | bool
     - role: ollama
+  post_tasks:
+    - name: Activate public request admission after model acceptance
+      ansible.builtin.include_role:
+        name: public_api
+        tasks_from: activate
+      when:
+        - public_api_enabled | default(false) | bool
+        - not ansible_check_mode
