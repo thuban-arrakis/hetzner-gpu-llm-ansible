@@ -6,6 +6,7 @@ provider "registry.terraform.io/futo-org/hetzner" {
   constraints = "1.1.0"
   hashes = [
     "h1:8j8C4yVXPlPf8vKEe2Y0RehC8BBP5NEzd99uaX6oXcM=",
+    "h1:eV5C3IlOCaX6AIDDj4psOigIsQuK2aIBbOIulvLVT+M=",
     "zh:0d6a5e69a7a789c9c81b516fbe7152ab4a16660237d5ebef3c45a4e68bda7809",
     "zh:340eae901bc2c3bd63f53584c6d575de1c5dfd33ecf6ace988b99d0595f78c0f",
     "zh:3e57d35fd16173aa426798931089850237831e2ac59c644304956e72bef6935b",
